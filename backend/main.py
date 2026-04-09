@@ -2,7 +2,6 @@ import os
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from typing import List, Optional
-from uuid import uuid4
 
 from fastapi import FastAPI, UploadFile, File, Form, Depends, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -15,11 +14,9 @@ from sqlmodel import select
 
 from database import init_db, engine
 from models import Report, User
+from storage import LocalStorageBackend, create_storage_backend
 
 from sqlmodel import Session
-
-UPLOAD_DIR = os.path.join(os.path.dirname(__file__), "uploads")
-os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 JWT_SECRET = os.getenv("JWT_SECRET", "dev-secret-change-me")
 JWT_ALGORITHM = "HS256"
@@ -61,6 +58,7 @@ class ReportPublic(BaseModel):
     severity: str
     photo_path: Optional[str] = None
     picked_up: bool
+    picked_up_at: Optional[datetime] = None
     notes: Optional[str] = None
     duration_minutes: Optional[int] = None
     created_at: datetime
@@ -111,6 +109,7 @@ def _serialize_report(session: Session, report: Report) -> ReportPublic:
         severity=report.severity,
         photo_path=report.photo_path,
         picked_up=report.picked_up,
+        picked_up_at=report.picked_up_at,
         notes=report.notes,
         duration_minutes=report.duration_minutes,
         created_at=report.created_at,
@@ -149,17 +148,12 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-app.mount("/uploads", StaticFiles(directory=UPLOAD_DIR), name="uploads")
-
+storage_backend = create_storage_backend(base_dir=os.path.dirname(__file__))
+if isinstance(storage_backend, LocalStorageBackend):
+    app.mount("/uploads", StaticFiles(directory=storage_backend.upload_dir), name="uploads")
 
 async def save_upload(file: UploadFile) -> str:
-    ext = os.path.splitext(file.filename or "")[1]
-    filename = f"{uuid4().hex}{ext}"
-    dest = os.path.join(UPLOAD_DIR, filename)
-    with open(dest, "wb") as f:
-        content = await file.read()
-        f.write(content)
-    return f"/uploads/{filename}"
+    return await storage_backend.save_upload(file)
 
 
 @app.post("/auth/register", response_model=AuthResponse)
@@ -224,6 +218,7 @@ def update_report(
             raise HTTPException(status_code=404, detail="Report not found")
         report.picked_up = picked_up
         report.picked_up_by_user_id = str(user.id) if picked_up else None
+        report.picked_up_at = datetime.now(timezone.utc) if picked_up else None
         session.add(report)
         session.commit()
         session.refresh(report)
@@ -287,6 +282,7 @@ async def create_report(
         severity=severity,
         notes=notes,
         picked_up=picked_up,
+        picked_up_at=datetime.now(timezone.utc) if picked_up else None,
         duration_minutes=duration_minutes,
         photo_path=photo_path,
         user_id=str(user.id),

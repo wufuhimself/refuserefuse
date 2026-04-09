@@ -11,6 +11,7 @@ class Report(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     user_id: Optional[str] = None
     picked_up_by_user_id: Optional[str] = None
+    picked_up_at: Optional[datetime] = None
     lat: float
     lng: float
     severity: str = "light"
