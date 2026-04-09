@@ -4,6 +4,9 @@ import L from 'leaflet'
 import axios from 'axios'
 
 const API = 'http://localhost:8000'
+const GOOGLE_CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID || ''
+const APPLE_CLIENT_ID = import.meta.env.VITE_APPLE_CLIENT_ID || ''
+const APPLE_REDIRECT_URI = import.meta.env.VITE_APPLE_REDIRECT_URI || window.location.origin
 
 // ── Severity config ────────────────────────────────────────────────────────────
 const SEVERITIES = ['light', 'moderate', 'trashy', 'urgent']
@@ -171,7 +174,28 @@ export default function MapPage() {
   const watchIdRef = useRef(null)
   const fileRef = useRef()
   const incidentFileRef = useRef()
+  const googleRenderedRef = useRef(false)
+  const appleInitRef = useRef(false)
   const activeTheme = MAP_THEMES.find((t) => t.id === mapTheme) || MAP_THEMES[0]
+
+  function loadScriptOnce(id, src) {
+    return new Promise((resolve, reject) => {
+      const existing = document.getElementById(id)
+      if (existing) {
+        resolve()
+        return
+      }
+
+      const script = document.createElement('script')
+      script.id = id
+      script.src = src
+      script.async = true
+      script.defer = true
+      script.onload = () => resolve()
+      script.onerror = () => reject(new Error(`Failed to load ${src}`))
+      document.head.appendChild(script)
+    })
+  }
 
   useEffect(() => {
     localStorage.setItem('rr_map_theme', mapTheme)
@@ -243,6 +267,59 @@ export default function MapPage() {
       }
     }
   }, [liveTracking])
+
+  useEffect(() => {
+    let cancelled = false
+
+    if (!authOpen) {
+      googleRenderedRef.current = false
+      return () => {
+        cancelled = true
+      }
+    }
+
+    async function initGoogleSignInButton() {
+      if (!authOpen || !GOOGLE_CLIENT_ID) return
+
+      try {
+        await loadScriptOnce('google-identity-services', 'https://accounts.google.com/gsi/client')
+      } catch {
+        if (!cancelled) setAuthErr('Could not load Google Sign-In. Check your network or client ID settings.')
+        return
+      }
+
+      if (cancelled || !window.google?.accounts?.id) return
+
+      window.google.accounts.id.initialize({
+        client_id: GOOGLE_CLIENT_ID,
+        callback: async ({ credential }) => {
+          if (!credential) {
+            setAuthErr('Google authentication failed to provide an ID token.')
+            return
+          }
+          await submitOAuthToken('google', credential)
+        },
+      })
+
+      const mount = document.getElementById('google-signin-button')
+      if (!mount || googleRenderedRef.current) return
+      mount.innerHTML = ''
+      window.google.accounts.id.renderButton(mount, {
+        theme: 'outline',
+        size: 'large',
+        shape: 'pill',
+        text: 'continue_with',
+        width: 320,
+      })
+      googleRenderedRef.current = true
+    }
+
+    initGoogleSignInButton()
+
+    return () => {
+      cancelled = true
+    }
+  }, [authOpen])
 
   async function fetchReports() {
     try {
@@ -533,6 +610,59 @@ export default function MapPage() {
       setAuthForm({ email: '', password: '', display_name: '' })
     } catch (err) {
       setAuthErr(err?.response?.data?.detail || 'Authentication failed')
+    }
+  }
+
+  async function submitOAuthToken(provider, idToken, displayName = null) {
+    setAuthErr('')
+    try {
+      const res = await axios.post(`${API}/auth/oauth/${provider}`, {
+        id_token: idToken,
+        display_name: displayName,
+      })
+      setToken(res.data.access_token)
+      setAuthOpen(false)
+      setAuthForm({ email: '', password: '', display_name: '' })
+    } catch (err) {
+      setAuthErr(err?.response?.data?.detail || `${provider} authentication failed`)
+    }
+  }
+
+  async function handleAppleSignIn() {
+    if (!APPLE_CLIENT_ID) {
+      setAuthErr('Apple Sign-In is not configured. Set VITE_APPLE_CLIENT_ID in frontend/.env.')
+      return
+    }
+
+    try {
+      await loadScriptOnce('appleid-signin', 'https://appleid.cdn-apple.com/appleauth/static/jsapi/appleid/1/en_US/appleid.auth.js')
+
+      if (!appleInitRef.current) {
+        window.AppleID.auth.init({
+          clientId: APPLE_CLIENT_ID,
+          scope: 'name email',
+          redirectURI: APPLE_REDIRECT_URI,
+          usePopup: true,
+        })
+        appleInitRef.current = true
+      }
+
+      const response = await window.AppleID.auth.signIn()
+      const token = response?.authorization?.id_token
+      if (!token) {
+        setAuthErr('Apple authentication did not return an ID token.')
+        return
+      }
+
+      const firstName = response?.user?.name?.firstName || ''
+      const lastName = response?.user?.name?.lastName || ''
+      const displayName = `${firstName} ${lastName}`.trim() || null
+      await submitOAuthToken('apple', token, displayName)
+    } catch (err) {
+      const maybeMessage = err?.error || err?.message || 'Apple authentication failed'
+      if (!String(maybeMessage).toLowerCase().includes('popup_closed_by_user')) {
+        setAuthErr(maybeMessage)
+      }
     }
   }
 
@@ -1171,6 +1301,18 @@ export default function MapPage() {
               </div>
 
               <form onSubmit={submitAuth}>
+                <div style={{ marginBottom: 12, display: 'grid', gap: 8 }}>
+                  <div id="google-signin-button" style={{ display: 'flex', justifyContent: 'center' }} />
+                  <button
+                    type="button"
+                    onClick={handleAppleSignIn}
+                    style={{ width: '100%', border: '1px solid #d4daee', borderRadius: 999, padding: '10px 12px', background: '#fff', color: '#1f2743', fontWeight: 700, cursor: 'pointer' }}
+                  >
+                    Continue with Apple
+                  </button>
+                  <div style={{ textAlign: 'center', fontSize: 11, color: '#65718f' }}>or continue with email</div>
+                </div>
+
                 {authMode === 'register' && (
                   <div style={{ marginBottom: 10 }}>
                     <label style={{ fontSize: 12, fontWeight: 600 }}>Display Name</label>

@@ -1,0 +1,38 @@
+{
+  "expo": {
+    "name": "RefuseRefuse",
+    "slug": "refuserefuse-mobile",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "light",
+    "splash": {
+      "resizeMode": "contain",
+      "backgroundColor": "#0f152b"
+    },
+    "assetBundlePatterns": [
+      "**/*"
+    ],
+    "ios": {
+      "supportsTablet": true,
+      "usesAppleSignIn": true,
+      "bundleIdentifier": "com.refuserefuse.mobile",
+      "infoPlist": {
+        "NSLocationWhenInUseUsageDescription": "RefuseRefuse uses your location to center the map and find nearby cleanup targets."
+      }
+    },
+    "android": {
+      "package": "com.refuserefuse.mobile",
+      "adaptiveIcon": {
+        "backgroundColor": "#0f152b"
+      },
+      "permissions": [
+        "ACCESS_COARSE_LOCATION",
+        "ACCESS_FINE_LOCATION"
+      ]
+    },
+    "plugins": [
+      "expo-location",
+      "expo-apple-authentication"
+    ]
+  }
+}

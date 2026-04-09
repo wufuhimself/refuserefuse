@@ -2,12 +2,15 @@ import os
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from typing import List, Optional
+from urllib.error import URLError
 
 from fastapi import FastAPI, UploadFile, File, Form, Depends, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jose import jwt, JWTError
+import jwt as pyjwt
+from jwt import PyJWKClient
 from passlib.context import CryptContext
 from pydantic import BaseModel, EmailStr
 from sqlmodel import select
@@ -21,8 +24,12 @@ from sqlmodel import Session
 JWT_SECRET = os.getenv("JWT_SECRET", "dev-secret-change-me")
 JWT_ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_HOURS = 24 * 7
+GOOGLE_CLIENT_IDS = [cid.strip() for cid in os.getenv("GOOGLE_CLIENT_IDS", "").split(",") if cid.strip()]
+APPLE_AUDIENCES = [aud.strip() for aud in os.getenv("APPLE_AUDIENCES", "").split(",") if aud.strip()]
 pwd_context = CryptContext(schemes=["pbkdf2_sha256"], deprecated="auto")
 bearer = HTTPBearer()
+google_jwks_client = PyJWKClient("https://www.googleapis.com/oauth2/v3/certs")
+apple_jwks_client = PyJWKClient("https://appleid.apple.com/auth/keys")
 
 
 class RegisterRequest(BaseModel):
@@ -39,6 +46,11 @@ class LoginRequest(BaseModel):
 class AuthResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
+
+
+class OAuthLoginRequest(BaseModel):
+    id_token: str
+    display_name: Optional[str] = None
 
 
 class UserPublic(BaseModel):
@@ -69,6 +81,8 @@ def hash_password(password: str) -> str:
 
 
 def verify_password(password: str, password_hash: str) -> bool:
+    if not password_hash:
+        return False
     return pwd_context.verify(password, password_hash)
 
 
@@ -81,6 +95,113 @@ def create_access_token(user: User) -> str:
         "iat": now,
     }
     return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
+
+
+def _choose_display_name(explicit_name: Optional[str], fallback_name: Optional[str], fallback_email: Optional[str]) -> Optional[str]:
+    if explicit_name and explicit_name.strip():
+        return explicit_name.strip()
+    if fallback_name and fallback_name.strip():
+        return fallback_name.strip()
+    if fallback_email:
+        return fallback_email.split("@")[0]
+    return None
+
+
+def _find_or_create_oauth_user(
+    session: Session,
+    *,
+    provider: str,
+    subject: str,
+    email: Optional[str],
+    display_name: Optional[str],
+) -> User:
+    linked_user = session.exec(
+        select(User).where(User.auth_provider == provider, User.auth_subject == subject)
+    ).first()
+    if linked_user:
+        if display_name and linked_user.display_name != display_name:
+            linked_user.display_name = display_name
+            session.add(linked_user)
+            session.commit()
+            session.refresh(linked_user)
+        return linked_user
+
+    user = None
+    if email:
+        user = session.exec(select(User).where(User.email == email)).first()
+
+    if user:
+        if not user.auth_provider:
+            user.auth_provider = provider
+        if not user.auth_subject:
+            user.auth_subject = subject
+        if display_name and not user.display_name:
+            user.display_name = display_name
+        session.add(user)
+        session.commit()
+        session.refresh(user)
+        return user
+
+    stable_email = email or f"{provider}-{subject}@noemail.refuserefuse.local"
+    fresh_user = User(
+        email=stable_email,
+        display_name=display_name,
+        password_hash=hash_password(f"oauth::{provider}::{subject}"),
+        auth_provider=provider,
+        auth_subject=subject,
+    )
+    session.add(fresh_user)
+    session.commit()
+    session.refresh(fresh_user)
+    return fresh_user
+
+
+def _verify_google_id_token(id_token: str) -> dict:
+    if not GOOGLE_CLIENT_IDS:
+        raise HTTPException(status_code=500, detail="Google auth is not configured on the server")
+
+    try:
+        signing_key = google_jwks_client.get_signing_key_from_jwt(id_token)
+        payload = pyjwt.decode(
+            id_token,
+            signing_key.key,
+            algorithms=["RS256"],
+            audience=GOOGLE_CLIENT_IDS,
+            issuer=["accounts.google.com", "https://accounts.google.com"],
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=401, detail="Invalid Google token") from exc
+
+    if not payload.get("sub"):
+        raise HTTPException(status_code=401, detail="Google token missing subject")
+    if not payload.get("email"):
+        raise HTTPException(status_code=401, detail="Google account has no email")
+    if payload.get("email_verified") is not True:
+        raise HTTPException(status_code=401, detail="Google email is not verified")
+
+    return payload
+
+
+def _verify_apple_id_token(id_token: str) -> dict:
+    if not APPLE_AUDIENCES:
+        raise HTTPException(status_code=500, detail="Apple auth is not configured on the server")
+
+    try:
+        signing_key = apple_jwks_client.get_signing_key_from_jwt(id_token)
+        payload = pyjwt.decode(
+            id_token,
+            signing_key.key,
+            algorithms=["RS256"],
+            audience=APPLE_AUDIENCES,
+            issuer="https://appleid.apple.com",
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=401, detail="Invalid Apple token") from exc
+
+    if not payload.get("sub"):
+        raise HTTPException(status_code=401, detail="Apple token missing subject")
+
+    return payload
 
 
 def _resolve_user_label(session: Session, user_id: Optional[str]) -> Optional[str]:
@@ -185,6 +306,44 @@ def login(payload: LoginRequest):
         user = session.exec(select(User).where(User.email == payload.email)).first()
         if not user or not verify_password(payload.password, user.password_hash):
             raise HTTPException(status_code=401, detail="Invalid email or password")
+
+    token = create_access_token(user)
+    return AuthResponse(access_token=token)
+
+
+@app.post("/auth/oauth/google", response_model=AuthResponse)
+def oauth_google(payload: OAuthLoginRequest):
+    verified = _verify_google_id_token(payload.id_token)
+    email = verified.get("email")
+    display_name = _choose_display_name(payload.display_name, verified.get("name"), email)
+
+    with Session(engine) as session:
+        user = _find_or_create_oauth_user(
+            session,
+            provider="google",
+            subject=str(verified["sub"]),
+            email=email,
+            display_name=display_name,
+        )
+
+    token = create_access_token(user)
+    return AuthResponse(access_token=token)
+
+
+@app.post("/auth/oauth/apple", response_model=AuthResponse)
+def oauth_apple(payload: OAuthLoginRequest):
+    verified = _verify_apple_id_token(payload.id_token)
+    email = verified.get("email")
+    display_name = _choose_display_name(payload.display_name, None, email)
+
+    with Session(engine) as session:
+        user = _find_or_create_oauth_user(
+            session,
+            provider="apple",
+            subject=str(verified["sub"]),
+            email=email,
+            display_name=display_name,
+        )
 
     token = create_access_token(user)
     return AuthResponse(access_token=token)

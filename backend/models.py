@@ -28,4 +28,6 @@ class User(SQLModel, table=True):
     email: str = Field(index=True, unique=True)
     display_name: Optional[str] = None
     password_hash: str
+    auth_provider: Optional[str] = Field(default=None, index=True)
+    auth_subject: Optional[str] = Field(default=None, index=True)
     created_at: datetime = Field(default_factory=_utcnow)

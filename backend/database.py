@@ -29,6 +29,13 @@ def _ensure_schema_compatibility() -> None:
             )
         )
 
+        user_cols = conn.execute(text("PRAGMA table_info(user)")).all()
+        user_col_names = {row[1] for row in user_cols}
+        if "auth_provider" not in user_col_names:
+            conn.execute(text("ALTER TABLE user ADD COLUMN auth_provider VARCHAR"))
+        if "auth_subject" not in user_col_names:
+            conn.execute(text("ALTER TABLE user ADD COLUMN auth_subject VARCHAR"))
+
 
 def init_db():
     SQLModel.metadata.create_all(engine)

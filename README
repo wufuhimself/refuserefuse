@@ -19,7 +19,24 @@ Project layout
 
 - `backend/` contains the FastAPI API and local SQLite data
 - `frontend/` contains the Vite browser app
+- `mobile/` contains the Expo mobile app shell
 
 Mobile plan
 
-The earlier Expo scaffold has been intentionally removed from the repo root so the active app is unambiguous. If a mobile app is added later, it should live in its own folder such as `mobile/` instead of sharing the root with the browser app.
+The earlier Expo scaffold was intentionally removed from the repo root so the active app stayed unambiguous. Mobile now lives in its own dedicated `mobile/` directory instead of sharing the root with the browser app.
+
+Mobile quick start
+
+- `cd mobile && npm install`
+- `npm run mobile:start` from the repo root, or `npm start` inside `mobile/`
+- Set `EXPO_PUBLIC_API_BASE_URL` if you are running on a device instead of a simulator
+
+Social auth quick setup
+
+- Copy and customize env templates:
+	- `backend/.env.example`
+	- `frontend/.env.example`
+	- `mobile/.env.example`
+- Backend must be started with `GOOGLE_CLIENT_IDS` and `APPLE_AUDIENCES` configured.
+- Frontend uses Google and Apple JS SDKs and exchanges provider ID tokens with backend OAuth endpoints.
+- Mobile uses Expo Google/Apple sign-in and exchanges provider ID tokens with backend OAuth endpoints.
