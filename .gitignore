@@ -1,0 +1,19 @@
+node_modules/
+.expo/
+.expo-shared/
+dist/
+frontend/dist/
+android/
+ios/
+*.log
+*.key
+env.local
+__pycache__/
+*.pyc
+backend/dev.db
+backend/venv/
+backend/.venv/
+backend/uploads/
+# dev server PID files
+.backend.pid
+.frontend.pid
