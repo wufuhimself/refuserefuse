@@ -48,15 +48,21 @@ Backend (`backend/`)
 
 - FastAPI app with local SQLite (`backend/dev.db`).
 - File uploads are stored in `backend/uploads/`.
+- All report creation/updates require authentication (JWT token in Authorization header).
 - Common endpoints:
-  - `GET /reports`
-  - `POST /reports`
+  - `GET /reports` (public)
+  - `POST /reports` (authenticated; supports multipart photo upload)
+  - `PATCH /reports/{id}` (authenticated; mark as picked up)
+  - `PATCH /reports/{id}/photo` (authenticated; upload photo)
+  - `DELETE /reports/{id}` (authenticated; soft delete)
   - `POST /auth/oauth/google`
   - `POST /auth/oauth/apple`
+  - `GET /auth/me` (authenticated)
 
 Auth configuration
 
 - Backend verifies provider ID tokens and exchanges them for RefuseRefuse JWTs.
+- **OAuth account linking is strict**: One provider per email. Attempting to link an email to a second provider returns HTTP 409 (Conflict). Users must use a different email or stick to their original provider.
 - Required backend env vars:
   - `GOOGLE_CLIENT_IDS`: comma-separated Google OAuth client IDs allowed to mint ID tokens.
   - `APPLE_AUDIENCES`: comma-separated Apple audiences (Service ID for web and bundle ID for iOS app).
@@ -153,6 +159,54 @@ After any successful sign-in (web or mobile), verify backend logs show:
 | Apple auth unavailable | Apple Sign-In only works on iOS (not Android or web simulator). Use Safari on macOS for web testing. |
 | Backend returns 422 on OAuth exchange | Provider ID token is invalid or `GOOGLE_CLIENT_IDS`/`APPLE_AUDIENCES` doesn't include your credential. Check backend logs for specific validation error. |
 | After logout, login button doesn't work | Refresh the page (web) or restart the app (mobile). Check that token was actually cleared in storage. |
+
+## Authenticated Submissions
+
+All report submissions require user authentication. The flow is:
+
+1. **User taps/clicks to create report** → App opens report composer modal.
+2. **User enters details** (location, severity, notes, optional photo).
+3. **User taps "Submit Report"** → App checks if user has a valid token.
+4. **If not authenticated**: App opens auth modal; user logs in via OAuth or email/password.
+5. **After auth**: App automatically retries the submission with the new token.
+6. **On backend**: `POST /reports` is authenticated-only (returns 401 if no valid Bearer token).
+7. **Success**: Report created with `user_id` set to the authenticated user's ID; modal closes; reports list refreshes.
+
+### Submission endpoints (authenticated)
+
+- **POST /reports** - Create a new trash report or incident
+  - Required header: `Authorization: Bearer <jwt_token>`
+  - Form body: lat, lng, severity, notes (optional), picked_up (bool), file (optional photo).
+  - Returns: Created report object.
+  - User ID is automatically set from the JWT token.
+
+- **PATCH /reports/{id}** - Mark a report as picked up/cleaned
+  - Required header: `Authorization: Bearer <jwt_token>`
+  - Form body: `picked_up` (bool).
+  - Only the original reporter can modify their reports.
+
+- **PATCH /reports/{id}/photo** - Add a photo to a report
+  - Required header: `Authorization: Bearer <jwt_token>`
+  - Form body: `file` (binary photo).
+  - Only the original reporter can add a photo.
+
+- **DELETE /reports/{id}** - Soft-delete a report
+  - Required header: `Authorization: Bearer <jwt_token>`
+  - Only the original reporter can delete their report.
+
+### Mobile submission (React Native / Expo)
+
+- Call `submitReport()` for trash reports (uses FormData + fetch with Bearer token).
+- Call `submitIncident()` for environmental incidents (prefixes notes with `[ENVIRONMENTAL INCIDENT]` marker).
+- Both functions check user authentication; if missing, open auth modal and retry after login.
+- Photos are attached via FormData (future work; currently form-only).
+
+### Web submission (Vite / React)
+
+- Already wired and functional.
+- Uses axios with `Authorization: Bearer ${token}` header.
+- Submission form checks `token` state; if missing, opens auth modal.
+- After successful login, form can be resubmitted.
 
 ## Product direction (reference)
 

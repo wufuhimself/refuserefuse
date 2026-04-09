@@ -115,6 +115,15 @@ def _find_or_create_oauth_user(
     email: Optional[str],
     display_name: Optional[str],
 ) -> User:
+    """
+    Find or create an OAuth-linked user.
+    
+    Rules:
+    1. If (provider, subject) already linked: update display_name if needed and return.
+    2. If email exists but has a DIFFERENT provider linked: reject (409 Conflict).
+    3. If email exists with NO provider linked: link the new provider to it.
+    4. Otherwise: create a new account.
+    """
     linked_user = session.exec(
         select(User).where(User.auth_provider == provider, User.auth_subject == subject)
     ).first()
@@ -131,6 +140,12 @@ def _find_or_create_oauth_user(
         user = session.exec(select(User).where(User.email == email)).first()
 
     if user:
+        if user.auth_provider and user.auth_provider != provider:
+            raise HTTPException(
+                status_code=409,
+                detail=f"This email is already linked to {user.auth_provider}. "
+                       f"To use a different provider, create a separate account with a different email.",
+            )
         if not user.auth_provider:
             user.auth_provider = provider
         if not user.auth_subject:

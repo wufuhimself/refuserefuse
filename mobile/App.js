@@ -290,6 +290,89 @@ function AppContent() {
     setLoading(false)
   }
 
+  async function submitReport() {
+    if (!token) {
+      setAuthOpen(true)
+      return
+    }
+
+    if (!pendingCoordinate || !pendingCoordinate.latitude || !pendingCoordinate.longitude) {
+      alert('Invalid coordinates. Please try again.')
+      return
+    }
+
+    try {
+      const fd = new FormData()
+      fd.append('lat', pendingCoordinate.latitude)
+      fd.append('lng', pendingCoordinate.longitude)
+      fd.append('severity', reportDraft.severity)
+      fd.append('notes', reportDraft.notes || '')
+      fd.append('picked_up', reportDraft.picked_up)
+
+      const res = await fetch(`${apiBaseUrl}/reports`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+        body: fd,
+      })
+
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({ detail: 'Report submission failed' }))
+        throw new Error(body?.detail || 'Report submission failed')
+      }
+
+      await refreshReports()
+      setReportOpen(false)
+      setReportDraft({ severity: 'light', notes: '', picked_up: false })
+      setPendingCoordinate(null)
+    } catch (err) {
+      alert(err?.message || 'Failed to submit report')
+    }
+  }
+
+  async function submitIncident() {
+    if (!token) {
+      setAuthOpen(true)
+      return
+    }
+
+    if (!pendingCoordinate || !pendingCoordinate.latitude || !pendingCoordinate.longitude) {
+      alert('Invalid coordinates. Please try again.')
+      return
+    }
+
+    if (!reportDraft.notes?.trim()) {
+      alert('Please add incident details.')
+      return
+    }
+
+    try {
+      const fd = new FormData()
+      fd.append('lat', pendingCoordinate.latitude)
+      fd.append('lng', pendingCoordinate.longitude)
+      fd.append('severity', 'urgent')
+      fd.append('notes', `[ENVIRONMENTAL INCIDENT]\n${reportDraft.notes}`)
+      fd.append('picked_up', false)
+
+      const res = await fetch(`${apiBaseUrl}/reports`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+        body: fd,
+      })
+
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({ detail: 'Incident submission failed' }))
+        throw new Error(body?.detail || 'Incident submission failed')
+      }
+
+      await refreshReports()
+      setIncidentOpen(false)
+      setReportDraft({ severity: 'light', notes: '', picked_up: false })
+      setPendingCoordinate(null)
+    } catch (err) {
+      alert(err?.message || 'Failed to submit incident')
+    }
+  }
+
   return (
     <LinearGradient colors={[COLORS.ink900, COLORS.ink800, COLORS.ink700]} start={{ x: 0.05, y: 0.05 }} end={{ x: 1, y: 1 }} style={styles.screen}>
       <StatusBar style="light" />
@@ -466,9 +549,10 @@ function AppContent() {
           coordinate={pendingCoordinate}
           onClose={() => setReportOpen(false)}
           onDraftChange={setReportDraft}
+          onSubmit={submitReport}
         />
 
-        <IncidentModal visible={incidentOpen} onClose={() => setIncidentOpen(false)} userLocation={userLocation} />
+        <IncidentModal visible={incidentOpen} onClose={() => setIncidentOpen(false)} userLocation={userLocation} coordinate={pendingCoordinate} onSubmit={submitIncident} draft={reportDraft} onDraftChange={setReportDraft} />
       </SafeAreaView>
     </LinearGradient>
   )
@@ -638,7 +722,7 @@ function StatPanel({ accent, label, tint, value }) {
   )
 }
 
-function ReportComposer({ visible, draft, coordinate, onClose, onDraftChange }) {
+function ReportComposer({ visible, draft, coordinate, onClose, onDraftChange, onSubmit }) {
   return (
     <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
       <View style={styles.sheetBackdrop}>
@@ -686,8 +770,8 @@ function ReportComposer({ visible, draft, coordinate, onClose, onDraftChange }) 
             <Switch value={draft.picked_up} onValueChange={(picked_up) => onDraftChange({ ...draft, picked_up })} />
           </View>
 
-          <TouchableOpacity style={styles.primaryButton}>
-            <Text style={styles.primaryButtonText}>Submission wiring next</Text>
+          <TouchableOpacity style={styles.primaryButton} onPress={onSubmit}>
+            <Text style={styles.primaryButtonText}>Submit Report</Text>
           </TouchableOpacity>
         </View>
       </View>
@@ -695,7 +779,7 @@ function ReportComposer({ visible, draft, coordinate, onClose, onDraftChange }) 
   )
 }
 
-function IncidentModal({ visible, onClose, userLocation }) {
+function IncidentModal({ visible, onClose, userLocation, coordinate, draft, onDraftChange, onSubmit }) {
   const locationLabel = userLocation
     ? `${userLocation.latitude.toFixed(5)}, ${userLocation.longitude.toFixed(5)}`
     : 'Location not captured yet'
@@ -714,21 +798,23 @@ function IncidentModal({ visible, onClose, userLocation }) {
             </TouchableOpacity>
           </View>
 
-          <Text style={styles.sectionTitle}>Evidence summary preview</Text>
-          <View style={styles.preBlock}>
-            <Text style={styles.preText}>[ENVIRONMENTAL INCIDENT]</Text>
-            <Text style={styles.preText}>Type: Illegal dumping</Text>
-            <Text style={styles.preText}>Location: {locationLabel}</Text>
-            <Text style={styles.preText}>Immediate hazard: Unknown</Text>
-            <Text style={styles.preText}>Details: Add observed facts, timestamps, odors, runoff, and photos.</Text>
-          </View>
+          <Text style={styles.sectionTitle}>Incident Details</Text>
+          <TextInput
+            multiline
+            numberOfLines={4}
+            placeholder="Describe the incident, hazards, and immediate threat..."
+            placeholderTextColor="#8190b2"
+            style={styles.textArea}
+            value={draft?.notes || ''}
+            onChangeText={(notes) => onDraftChange && onDraftChange({ ...draft, notes })}
+          />
 
           <Text style={styles.sectionTitle}>Escalation path</Text>
           <Text style={styles.listRow}>1. Pennsylvania DEP complaint resources</Text>
           <Text style={styles.listRow}>2. EPA environmental violations portal</Text>
           <Text style={styles.listRow}>3. National Response Center for emergency spills</Text>
-          <TouchableOpacity style={styles.primaryButton}>
-            <Text style={styles.primaryButtonText}>Save incident workflow next</Text>
+          <TouchableOpacity style={styles.primaryButton} onPress={onSubmit}>
+            <Text style={styles.primaryButtonText}>Submit Incident Report</Text>
           </TouchableOpacity>
         </Pressable>
       </Pressable>
