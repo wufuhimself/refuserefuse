@@ -3,7 +3,7 @@ import { MapContainer, TileLayer, Marker, Popup, Circle, CircleMarker, useMapEve
 import L from 'leaflet'
 import axios from 'axios'
 
-const API = 'http://localhost:8000'
+const API = import.meta.env.VITE_API_BASE_URL || '/api'
 const GOOGLE_CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID || ''
 const APPLE_CLIENT_ID = import.meta.env.VITE_APPLE_CLIENT_ID || ''
 const APPLE_REDIRECT_URI = import.meta.env.VITE_APPLE_REDIRECT_URI || window.location.origin
@@ -157,7 +157,6 @@ export default function MapPage() {
   const [mapTheme, setMapTheme] = useState(localStorage.getItem('rr_map_theme') || 'voyager')
   const [uiPreset, setUiPreset] = useState(localStorage.getItem('rr_ui_preset') || 'modern')
   const [showTapHint, setShowTapHint] = useState(localStorage.getItem('rr_show_tap_hint') !== 'false')
-  const [gpsArmed, setGpsArmed] = useState(false)
   const [cleanupTarget, setCleanupTarget] = useState(null)
   const [cleanupMessage, setCleanupMessage] = useState('')
   const [incidentFocusTarget, setIncidentFocusTarget] = useState(null)
@@ -422,7 +421,7 @@ export default function MapPage() {
   function handleLocateMe() {
     if (!navigator.geolocation) {
       setLocateError('Geolocation is not available in this browser.')
-      setGpsArmed(false)
+      setLiveTracking(false)
       return
     }
 
@@ -442,7 +441,7 @@ export default function MapPage() {
             ? 'Unable to determine your location right now.'
             : 'Location request timed out. Try again.'
         setLocateError(msg)
-        setGpsArmed(false)
+        setLiveTracking(false)
       },
       {
         enableHighAccuracy: true,
@@ -455,18 +454,11 @@ export default function MapPage() {
   function handleGpsControl() {
     if (liveTracking) {
       setLiveTracking(false)
-      setGpsArmed(false)
       return
     }
 
-    if (!gpsArmed) {
-      handleLocateMe()
-      setGpsArmed(true)
-      return
-    }
-
+    handleLocateMe()
     setLiveTracking(true)
-    setGpsArmed(false)
   }
 
   function handleFindNearbyCleanup() {
@@ -545,7 +537,7 @@ export default function MapPage() {
   async function copyIncidentSummary() {
     try {
       await navigator.clipboard.writeText(buildIncidentEvidenceText())
-      setIncidentErr('Evidence summary copied. Paste it into DEP/EPA forms.')
+      setIncidentErr('Evidence summary copied. Paste it into your local and federal reporting forms.')
     } catch {
       setIncidentErr('Could not copy automatically. You can still submit this incident here.')
     }
@@ -719,8 +711,8 @@ export default function MapPage() {
         </button>
         <button
           onClick={handleGpsControl}
-          title={liveTracking ? 'Stop live tracking' : (gpsArmed ? 'Enable live tracking' : 'Center on my location')}
-          aria-label={liveTracking ? 'Stop live tracking' : (gpsArmed ? 'Enable live tracking' : 'Center on my location')}
+          title={liveTracking ? 'Stop live tracking' : 'Center on my location and enable live tracking'}
+          aria-label={liveTracking ? 'Stop live tracking' : 'Center on my location and enable live tracking'}
           style={{ width: 34, height: 34, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', background: liveTracking ? '#2e7d32' : 'none', border: '1px solid #555', color: '#fff', borderRadius: 8, cursor: 'pointer' }}
         >
           <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -1186,8 +1178,7 @@ export default function MapPage() {
                     </div>
                     <ol style={{ margin: 0, paddingLeft: 18, display: 'grid', gap: 7, fontSize: 12, color: '#2f3550' }}>
                       <li>
-                        Pennsylvania DEP complaint resources:{' '}
-                        <a href="https://www.dep.pa.gov/About/Regional/Pages/EnvironmentalComplaints.aspx" target="_blank" rel="noreferrer">dep.pa.gov Environmental Complaints</a>
+                        State agency reporting guidance based on report location (coming soon).
                       </li>
                       <li>
                         EPA environmental violations portal:{' '}
@@ -1199,7 +1190,7 @@ export default function MapPage() {
                         (1-800-424-8802)
                       </li>
                       <li>
-                        If there is immediate danger, call 911 first, then file DEP/EPA reports.
+                        If there is immediate danger, call 911 first, then file agency reports.
                       </li>
                     </ol>
 
@@ -1215,7 +1206,7 @@ export default function MapPage() {
                       onClick={copyIncidentSummary}
                       style={{ marginTop: 10, width: '100%', borderRadius: 8, border: '1px solid #c8d3ef', background: '#fff', padding: '8px 10px', fontSize: 12, cursor: 'pointer', fontWeight: 600 }}
                     >
-                      Copy summary for DEP/EPA forms
+                      Copy summary for agency forms
                     </button>
                   </div>
                 </div>

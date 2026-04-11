@@ -1,0 +1,8 @@
+name: refuserefuse_analytics
+version: 1.0.0
+profile: refuserefuse_analytics
+
+model-paths: ["models"]
+
+target-path: target
+clean-targets: ["target", "dbt_packages"]

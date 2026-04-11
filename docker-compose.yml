@@ -1,0 +1,113 @@
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    working_dir: /app
+    command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+    environment:
+      STORAGE_BACKEND: local
+      STORAGE_LOCAL_DIR: /app/uploads
+      GOOGLE_CLIENT_IDS: ${GOOGLE_CLIENT_IDS:-}
+      APPLE_AUDIENCES: ${APPLE_AUDIENCES:-}
+      JWT_SECRET: ${JWT_SECRET:-dev-secret-change-me}
+    volumes:
+      - ./backend:/app
+    ports:
+      - "8000:8000"
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    working_dir: /app
+    command: sh -c "npm install && npm run dev -- --host 0.0.0.0 --port 5173"
+    environment:
+      VITE_API_BASE_URL: ${VITE_API_BASE_URL:-/api}
+      VITE_GOOGLE_CLIENT_ID: ${VITE_GOOGLE_CLIENT_ID:-}
+      VITE_APPLE_CLIENT_ID: ${VITE_APPLE_CLIENT_ID:-}
+      VITE_APPLE_REDIRECT_URI: ${VITE_APPLE_REDIRECT_URI:-}
+    volumes:
+      - ./frontend:/app
+      - frontend_node_modules:/app/node_modules
+    depends_on:
+      - backend
+
+  proxy:
+    image: nginx:1.27-alpine
+    depends_on:
+      - frontend
+      - backend
+    ports:
+      - "5173:80"
+    volumes:
+      - ./infra/nginx/dev.conf:/etc/nginx/conf.d/default.conf:ro
+
+  postgres:
+    image: postgres:16-alpine
+    profiles: ["analytics"]
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-airflow}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-airflow}
+      POSTGRES_DB: ${POSTGRES_DB:-analytics}
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-airflow} -d ${POSTGRES_DB:-analytics}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  airflow:
+    image: apache/airflow:2.9.3-python3.11
+    profiles: ["analytics"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${POSTGRES_USER:-airflow}:${POSTGRES_PASSWORD:-airflow}@postgres:5432/${POSTGRES_DB:-analytics}
+      AIRFLOW__CORE__FERNET_KEY: ""
+      AIRFLOW__CORE__LOAD_EXAMPLES: "False"
+      AIRFLOW__API__AUTH_BACKENDS: airflow.api.auth.backend.basic_auth
+      _AIRFLOW_WWW_USER_USERNAME: ${AIRFLOW_USERNAME:-admin}
+      _AIRFLOW_WWW_USER_PASSWORD: ${AIRFLOW_PASSWORD:-admin}
+    command: >
+      bash -lc "
+      airflow db migrate &&
+      airflow users create
+      --username $${_AIRFLOW_WWW_USER_USERNAME}
+      --password $${_AIRFLOW_WWW_USER_PASSWORD}
+      --firstname Admin
+      --lastname User
+      --role Admin
+      --email admin@example.com || true;
+      airflow scheduler &
+      exec airflow webserver
+      "
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./analytics/airflow/dags:/opt/airflow/dags
+      - ./analytics/airflow/logs:/opt/airflow/logs
+      - ./analytics/airflow/plugins:/opt/airflow/plugins
+
+  dbt:
+    image: ghcr.io/dbt-labs/dbt-postgres:1.8.latest
+    profiles: ["analytics"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    working_dir: /usr/app
+    entrypoint: ["/bin/sh", "-c"]
+    command: "tail -f /dev/null"
+    environment:
+      DBT_PROFILES_DIR: /usr/app
+    volumes:
+      - ./analytics/dbt:/usr/app
+
+volumes:
+  frontend_node_modules:
+  postgres_data:

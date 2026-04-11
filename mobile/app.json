@@ -32,7 +32,9 @@
     },
     "plugins": [
       "expo-location",
-      "expo-apple-authentication"
+      "expo-apple-authentication",
+      "expo-asset",
+      "expo-web-browser"
     ]
   }
 }

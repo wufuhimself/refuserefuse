@@ -810,7 +810,7 @@ function IncidentModal({ visible, onClose, userLocation, coordinate, draft, onDr
           />
 
           <Text style={styles.sectionTitle}>Escalation path</Text>
-          <Text style={styles.listRow}>1. Pennsylvania DEP complaint resources</Text>
+          <Text style={styles.listRow}>1. State agency reporting guidance based on report location (coming soon)</Text>
           <Text style={styles.listRow}>2. EPA environmental violations portal</Text>
           <Text style={styles.listRow}>3. National Response Center for emergency spills</Text>
           <TouchableOpacity style={styles.primaryButton} onPress={onSubmit}>
