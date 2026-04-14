@@ -54,6 +54,11 @@ const PENDING_ICON = makePinIcon('#1976d2', 0.6)
 const WALK_RADIUS_METERS = 1609.34
 const INCIDENT_DUPLICATE_RADIUS_METERS = 120
 const CLEANED_MARKER_TTL_MS = 24 * 60 * 60 * 1000
+const LOCATION_SAMPLE_MIN_MS = 30000
+const LOCATION_SAMPLE_MIN_DISTANCE_METERS = 50
+const LOCATION_MAX_ACCEPTED_ACCURACY_M = 120
+const LOCATION_BATCH_SIZE = 6
+const LOCATION_BATCH_FLUSH_MS = 15000
 
 const INCIDENT_ICON = L.divIcon({
   html: '<svg xmlns="http://www.w3.org/2000/svg" width="30" height="38" viewBox="0 0 30 38"><path d="M15 0C6.72 0 0 6.72 0 15c0 10.35 15 23 15 23S30 25.35 30 15C30 6.72 23.28 0 15 0Z" fill="#b71c1c" stroke="#fff" stroke-width="1.6"/><path d="M15 7 8 20h14L15 7Z" fill="#fff"/><rect x="14" y="11" width="2" height="6" fill="#b71c1c"/><circle cx="15" cy="19" r="1.2" fill="#b71c1c"/></svg>',
@@ -73,6 +78,10 @@ function distanceMeters(a, b) {
   const hav = Math.sin(dLat / 2) ** 2
     + Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLng / 2) ** 2
   return 2 * earth * Math.atan2(Math.sqrt(hav), Math.sqrt(1 - hav))
+}
+
+function roundCoord(value) {
+  return Math.round(value * 100000) / 100000
 }
 
 function isIncidentReport(report) {
@@ -144,6 +153,7 @@ export default function MapPage() {
   const [userLocation, setUserLocation] = useState(null)
   const [locateError, setLocateError]   = useState('')
   const [liveTracking, setLiveTracking] = useState(false)
+  const [locationConsentAccepted, setLocationConsentAccepted] = useState(localStorage.getItem('rr_location_history_consent') === 'true')
   const [token, setToken]               = useState(localStorage.getItem('tg_token') || '')
   const [currentUser, setCurrentUser]   = useState(null)
   const [authMode, setAuthMode]         = useState('login')
@@ -171,6 +181,10 @@ export default function MapPage() {
   })
   const [incidentPhoto, setIncidentPhoto] = useState(null)
   const watchIdRef = useRef(null)
+  const trackingSessionIdRef = useRef(null)
+  const pendingLocationPointsRef = useRef([])
+  const locationFlushTimerRef = useRef(null)
+  const lastSentLocationRef = useRef(null)
   const fileRef = useRef()
   const incidentFileRef = useRef()
   const googleRenderedRef = useRef(false)
@@ -208,6 +222,10 @@ export default function MapPage() {
     localStorage.setItem('rr_show_tap_hint', String(showTapHint))
   }, [showTapHint])
 
+  useEffect(() => {
+    localStorage.setItem('rr_location_history_consent', String(locationConsentAccepted))
+  }, [locationConsentAccepted])
+
   useEffect(() => { fetchReports() }, [])
   useEffect(() => {
     if (!token) {
@@ -225,6 +243,7 @@ export default function MapPage() {
         navigator.geolocation.clearWatch(watchIdRef.current)
         watchIdRef.current = null
       }
+      stopTrackingSession()
       return
     }
 
@@ -235,6 +254,7 @@ export default function MapPage() {
     }
 
     setLocateError('')
+    startTrackingSession()
     watchIdRef.current = navigator.geolocation.watchPosition(
       ({ coords }) => {
         setUserLocation({
@@ -242,6 +262,7 @@ export default function MapPage() {
           lng: coords.longitude,
           accuracy: coords.accuracy,
         })
+        queueLocationPoint(coords)
       },
       (error) => {
         const msg = error.code === 1
@@ -264,8 +285,24 @@ export default function MapPage() {
         navigator.geolocation.clearWatch(watchIdRef.current)
         watchIdRef.current = null
       }
+      stopTrackingSession()
     }
-  }, [liveTracking])
+  }, [liveTracking, token])
+
+  useEffect(() => {
+    return () => {
+      if (locationFlushTimerRef.current) {
+        clearTimeout(locationFlushTimerRef.current)
+        locationFlushTimerRef.current = null
+      }
+      if (trackingSessionIdRef.current && token) {
+        flushQueuedLocationPoints(token)
+        axios.post(`${API}/location/sessions/${trackingSessionIdRef.current}/stop`, {}, {
+          headers: { Authorization: `Bearer ${token}` },
+        }).catch(() => null)
+      }
+    }
+  }, [token])
 
   useEffect(() => {
     let cancelled = false
@@ -336,6 +373,102 @@ export default function MapPage() {
     } catch (err) {
       setToken('')
       setCurrentUser(null)
+    }
+  }
+
+  async function startTrackingSession() {
+    if (!token || trackingSessionIdRef.current) return
+    try {
+      const res = await axios.post(`${API}/location/sessions/start`, {
+        consent_version: '2026-04-location-history-v1',
+      }, {
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      trackingSessionIdRef.current = res.data.id
+      pendingLocationPointsRef.current = []
+      lastSentLocationRef.current = null
+    } catch (err) {
+      console.error(err)
+      setLocateError('Could not start location history right now. Live map tracking still works.')
+    }
+  }
+
+  async function flushQueuedLocationPoints(activeToken = token) {
+    const sessionId = trackingSessionIdRef.current
+    const queued = pendingLocationPointsRef.current
+    if (!sessionId || !activeToken || queued.length === 0) return
+
+    pendingLocationPointsRef.current = []
+    try {
+      await axios.post(`${API}/location/sessions/${sessionId}/points`, {
+        points: queued,
+      }, {
+        headers: { Authorization: `Bearer ${activeToken}` },
+      })
+    } catch (err) {
+      pendingLocationPointsRef.current = queued.concat(pendingLocationPointsRef.current).slice(-30)
+      console.error(err)
+    }
+  }
+
+  function scheduleLocationFlush() {
+    if (locationFlushTimerRef.current) return
+    locationFlushTimerRef.current = setTimeout(async () => {
+      locationFlushTimerRef.current = null
+      await flushQueuedLocationPoints()
+    }, LOCATION_BATCH_FLUSH_MS)
+  }
+
+  function queueLocationPoint(coords) {
+    if (!trackingSessionIdRef.current || !token) return
+    if (typeof coords?.latitude !== 'number' || typeof coords?.longitude !== 'number') return
+    if (typeof coords?.accuracy === 'number' && coords.accuracy > LOCATION_MAX_ACCEPTED_ACCURACY_M) return
+
+    const point = {
+      lat: roundCoord(coords.latitude),
+      lng: roundCoord(coords.longitude),
+      accuracy_m: typeof coords?.accuracy === 'number' ? Math.round(coords.accuracy) : null,
+      recorded_at: new Date().toISOString(),
+    }
+
+    const now = Date.now()
+    const last = lastSentLocationRef.current
+    if (last) {
+      const movedMeters = distanceMeters(last, point)
+      const elapsed = now - last.ts
+      if (elapsed < LOCATION_SAMPLE_MIN_MS && movedMeters < LOCATION_SAMPLE_MIN_DISTANCE_METERS) {
+        return
+      }
+    }
+
+    lastSentLocationRef.current = { lat: point.lat, lng: point.lng, ts: now }
+    pendingLocationPointsRef.current.push(point)
+
+    if (pendingLocationPointsRef.current.length >= LOCATION_BATCH_SIZE) {
+      flushQueuedLocationPoints()
+      return
+    }
+    scheduleLocationFlush()
+  }
+
+  async function stopTrackingSession() {
+    if (locationFlushTimerRef.current) {
+      clearTimeout(locationFlushTimerRef.current)
+      locationFlushTimerRef.current = null
+    }
+    await flushQueuedLocationPoints()
+
+    const sessionId = trackingSessionIdRef.current
+    if (!sessionId || !token) return
+    trackingSessionIdRef.current = null
+    lastSentLocationRef.current = null
+
+    try {
+      await axios.post(`${API}/location/sessions/${sessionId}/stop`, {}, {
+        headers: { Authorization: `Bearer ${token}` },
+      })
+    } catch (err) {
+      console.error(err)
     }
   }
 
@@ -455,6 +588,21 @@ export default function MapPage() {
     if (liveTracking) {
       setLiveTracking(false)
       return
+    }
+
+    if (!token) {
+      setAuthMode('login')
+      setAuthOpen(true)
+      setLocateError('Login required to save private location history while live tracking is active.')
+      return
+    }
+
+    if (!locationConsentAccepted) {
+      const consent = window.confirm(
+        'While Live Tracking is ON, we save your route history to your account so you can review cleanup history over time. You can stop anytime and clear history later in settings. Continue?'
+      )
+      if (!consent) return
+      setLocationConsentAccepted(true)
     }
 
     handleLocateMe()
@@ -659,6 +807,7 @@ export default function MapPage() {
   }
 
   function logout() {
+    setLiveTracking(false)
     setToken('')
     setCurrentUser(null)
   }
@@ -724,6 +873,16 @@ export default function MapPage() {
             <line x1="19" y1="12" x2="22" y2="12"/>
           </svg>
         </button>
+        {liveTracking && (
+          <span style={{ fontSize: 11, padding: '4px 8px', borderRadius: 999, border: '1px solid rgba(255,255,255,0.35)', background: 'rgba(22, 83, 38, 0.72)', color: '#fff', fontWeight: 700 }}>
+            Recording location history (tracking ON)
+          </span>
+        )}
+        {!liveTracking && locationConsentAccepted && (
+          <span style={{ fontSize: 11, color: '#cfd8f3' }}>
+            Location history saves only while tracking is ON.
+          </span>
+        )}
         <button
           onClick={handleFindNearbyCleanup}
           style={{ background: '#17324f', border: '1px solid #4a6f94', color: '#fff', borderRadius: 8, padding: '4px 10px', cursor: 'pointer', fontSize: 13, fontWeight: 600 }}

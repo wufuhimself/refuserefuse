@@ -16,7 +16,7 @@ from pydantic import BaseModel, EmailStr
 from sqlmodel import select
 
 from database import init_db, engine
-from models import Report, User
+from models import Report, User, LocationSession, LocationPoint
 from storage import LocalStorageBackend, create_storage_backend
 
 from sqlmodel import Session
@@ -74,6 +74,46 @@ class ReportPublic(BaseModel):
     notes: Optional[str] = None
     duration_minutes: Optional[int] = None
     created_at: datetime
+
+
+class LocationSessionStartRequest(BaseModel):
+    consent_version: Optional[str] = None
+
+
+class LocationSessionPublic(BaseModel):
+    id: int
+    user_id: str
+    source: str
+    consent_version: Optional[str] = None
+    started_at: datetime
+    ended_at: Optional[datetime] = None
+
+
+class LocationPointIn(BaseModel):
+    lat: float
+    lng: float
+    accuracy_m: Optional[float] = None
+    recorded_at: Optional[datetime] = None
+
+
+class LocationPointsUpsertRequest(BaseModel):
+    points: List[LocationPointIn]
+
+
+class LocationPointPublic(BaseModel):
+    id: int
+    session_id: int
+    user_id: str
+    lat: float
+    lng: float
+    accuracy_m: Optional[float] = None
+    is_coarse: bool
+    recorded_at: datetime
+
+
+class LocationHistoryResponse(BaseModel):
+    sessions: List[LocationSessionPublic]
+    points: List[LocationPointPublic]
 
 
 def hash_password(password: str) -> str:
@@ -252,6 +292,42 @@ def _serialize_report(session: Session, report: Report) -> ReportPublic:
     )
 
 
+def _serialize_location_session(loc_session: LocationSession) -> LocationSessionPublic:
+    return LocationSessionPublic(
+        id=loc_session.id,
+        user_id=loc_session.user_id,
+        source=loc_session.source,
+        consent_version=loc_session.consent_version,
+        started_at=loc_session.started_at,
+        ended_at=loc_session.ended_at,
+    )
+
+
+def _serialize_location_point(point: LocationPoint) -> LocationPointPublic:
+    return LocationPointPublic(
+        id=point.id,
+        session_id=point.session_id,
+        user_id=point.user_id,
+        lat=point.lat,
+        lng=point.lng,
+        accuracy_m=point.accuracy_m,
+        is_coarse=point.is_coarse,
+        recorded_at=point.recorded_at,
+    )
+
+
+def _round_coord(value: float) -> float:
+    return round(float(value), 5)
+
+
+def _coerce_utc_timestamp(value: Optional[datetime]) -> datetime:
+    if value is None:
+        return datetime.now(timezone.utc)
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
 def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(bearer)) -> User:
     token = credentials.credentials
     try:
@@ -367,6 +443,136 @@ def oauth_apple(payload: OAuthLoginRequest):
 @app.get("/auth/me", response_model=UserPublic)
 def auth_me(user: User = Depends(get_current_user)):
     return UserPublic(id=user.id, email=user.email, display_name=user.display_name)
+
+
+@app.post("/location/sessions/start", response_model=LocationSessionPublic)
+def start_location_session(
+    payload: LocationSessionStartRequest,
+    user: User = Depends(get_current_user),
+):
+    with Session(engine) as session:
+        loc_session = LocationSession(
+            user_id=str(user.id),
+            source="live_tracking",
+            consent_version=payload.consent_version,
+        )
+        session.add(loc_session)
+        session.commit()
+        session.refresh(loc_session)
+        return _serialize_location_session(loc_session)
+
+
+@app.post("/location/sessions/{session_id}/points")
+def append_location_points(
+    session_id: int,
+    payload: LocationPointsUpsertRequest,
+    user: User = Depends(get_current_user),
+):
+    accepted = len(payload.points)
+    if accepted == 0:
+        return {"accepted": 0, "stored": 0}
+
+    with Session(engine) as session:
+        loc_session = session.get(LocationSession, session_id)
+        if not loc_session or loc_session.user_id != str(user.id):
+            raise HTTPException(status_code=404, detail="Location session not found")
+        if loc_session.ended_at is not None:
+            raise HTTPException(status_code=409, detail="Location session already stopped")
+
+        stored = 0
+        for p in payload.points:
+            if p.accuracy_m is not None and p.accuracy_m > 200:
+                continue
+
+            point = LocationPoint(
+                session_id=loc_session.id,
+                user_id=str(user.id),
+                lat=_round_coord(p.lat),
+                lng=_round_coord(p.lng),
+                accuracy_m=p.accuracy_m,
+                is_coarse=bool(p.accuracy_m is not None and p.accuracy_m > 60),
+                recorded_at=_coerce_utc_timestamp(p.recorded_at),
+            )
+            session.add(point)
+            stored += 1
+
+        session.commit()
+        return {"accepted": accepted, "stored": stored}
+
+
+@app.post("/location/sessions/{session_id}/stop", response_model=LocationSessionPublic)
+def stop_location_session(
+    session_id: int,
+    user: User = Depends(get_current_user),
+):
+    with Session(engine) as session:
+        loc_session = session.get(LocationSession, session_id)
+        if not loc_session or loc_session.user_id != str(user.id):
+            raise HTTPException(status_code=404, detail="Location session not found")
+
+        if loc_session.ended_at is None:
+            loc_session.ended_at = datetime.now(timezone.utc)
+            session.add(loc_session)
+            session.commit()
+            session.refresh(loc_session)
+
+        return _serialize_location_session(loc_session)
+
+
+@app.get("/location/history", response_model=LocationHistoryResponse)
+def get_location_history(
+    days: int = 7,
+    limit: int = 1500,
+    user: User = Depends(get_current_user),
+):
+    days = max(1, min(days, 90))
+    limit = max(100, min(limit, 5000))
+    since = datetime.now(timezone.utc) - timedelta(days=days)
+
+    with Session(engine) as session:
+        sessions = session.exec(
+            select(LocationSession)
+            .where(LocationSession.user_id == str(user.id), LocationSession.started_at >= since)
+            .order_by(LocationSession.started_at.desc())
+            .limit(300)
+        ).all()
+        points = session.exec(
+            select(LocationPoint)
+            .where(LocationPoint.user_id == str(user.id), LocationPoint.recorded_at >= since)
+            .order_by(LocationPoint.recorded_at.asc())
+            .limit(limit)
+        ).all()
+
+        return LocationHistoryResponse(
+            sessions=[_serialize_location_session(s) for s in sessions],
+            points=[_serialize_location_point(p) for p in points],
+        )
+
+
+@app.delete("/location/history")
+def delete_location_history(user: User = Depends(get_current_user)):
+    with Session(engine) as session:
+        points = session.exec(
+            select(LocationPoint).where(LocationPoint.user_id == str(user.id))
+        ).all()
+        sessions = session.exec(
+            select(LocationSession).where(LocationSession.user_id == str(user.id))
+        ).all()
+
+        deleted_points = len(points)
+        deleted_sessions = len(sessions)
+
+        for point in points:
+            session.delete(point)
+        for loc_session in sessions:
+            session.delete(loc_session)
+
+        session.commit()
+        return {
+            "ok": True,
+            "deleted_points": deleted_points,
+            "deleted_sessions": deleted_sessions,
+        }
 
 
 @app.get("/reports", response_model=List[ReportPublic])
