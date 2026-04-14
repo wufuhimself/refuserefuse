@@ -12,10 +12,12 @@
   },
   "dependencies": {
     "@expo-google-fonts/space-grotesk": "^0.4.1",
+    "@react-native-async-storage/async-storage": "^3.0.2",
     "expo": "^54.0.0",
     "expo-apple-authentication": "~8.0.8",
     "expo-asset": "~12.0.12",
     "expo-auth-session": "~7.0.10",
+    "expo-haptics": "^55.0.14",
     "expo-linear-gradient": "~15.0.8",
     "expo-location": "~19.0.8",
     "expo-status-bar": "~3.0.9",

@@ -37,3 +37,49 @@ export async function loadReports() {
     }
   }
 }
+
+async function authorizedJson(path, token, options = {}) {
+  const baseUrl = resolveApiBaseUrl()
+  const response = await fetch(`${baseUrl}${path}`, {
+    ...options,
+    headers: {
+      Authorization: `Bearer ${token}`,
+      ...(options.headers || {}),
+    },
+  })
+
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({ detail: 'Request failed' }))
+    throw new Error(body?.detail || 'Request failed')
+  }
+
+  return response.json()
+}
+
+export function startLocationSession(token, consentVersion) {
+  return authorizedJson('/location/sessions/start', token, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ consent_version: consentVersion }),
+  })
+}
+
+export function appendLocationPoints(token, sessionId, points) {
+  return authorizedJson(`/location/sessions/${sessionId}/points`, token, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ points }),
+  })
+}
+
+export function stopLocationSession(token, sessionId) {
+  return authorizedJson(`/location/sessions/${sessionId}/stop`, token, {
+    method: 'POST',
+  })
+}
+
+export function deleteStoredLocationHistory(token) {
+  return authorizedJson('/location/history', token, {
+    method: 'DELETE',
+  })
+}

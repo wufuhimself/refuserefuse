@@ -59,6 +59,10 @@ const LOCATION_SAMPLE_MIN_DISTANCE_METERS = 50
 const LOCATION_MAX_ACCEPTED_ACCURACY_M = 120
 const LOCATION_BATCH_SIZE = 6
 const LOCATION_BATCH_FLUSH_MS = 15000
+const LOCATION_CONSENT_VERSION = '2026-04-location-history-v1'
+const LOCATION_PRIVACY_SUMMARY = 'When Live Tracking is ON, RefuseRefuse stores sampled GPS points in your private account history on our server.'
+const LOCATION_PRIVACY_USE = 'We use saved location history only to improve cleanup tools, understand trash trends, and produce anonymous or aggregate insights.'
+const LOCATION_PRIVACY_PUBLIC = 'Your identity is not attached to any public-facing location analysis, and you can delete your saved history at any time.'
 
 const INCIDENT_ICON = L.divIcon({
   html: '<svg xmlns="http://www.w3.org/2000/svg" width="30" height="38" viewBox="0 0 30 38"><path d="M15 0C6.72 0 0 6.72 0 15c0 10.35 15 23 15 23S30 25.35 30 15C30 6.72 23.28 0 15 0Z" fill="#b71c1c" stroke="#fff" stroke-width="1.6"/><path d="M15 7 8 20h14L15 7Z" fill="#fff"/><rect x="14" y="11" width="2" height="6" fill="#b71c1c"/><circle cx="15" cy="19" r="1.2" fill="#b71c1c"/></svg>',
@@ -82,6 +86,10 @@ function distanceMeters(a, b) {
 
 function roundCoord(value) {
   return Math.round(value * 100000) / 100000
+}
+
+function formatCount(value, singular, plural = `${singular}s`) {
+  return `${value} ${value === 1 ? singular : plural}`
 }
 
 function isIncidentReport(report) {
@@ -154,6 +162,10 @@ export default function MapPage() {
   const [locateError, setLocateError]   = useState('')
   const [liveTracking, setLiveTracking] = useState(false)
   const [locationConsentAccepted, setLocationConsentAccepted] = useState(localStorage.getItem('rr_location_history_consent') === 'true')
+  const [locationConsentPromptOpen, setLocationConsentPromptOpen] = useState(false)
+  const [locationPrivacyStatus, setLocationPrivacyStatus] = useState('')
+  const [locationPrivacyStatusTone, setLocationPrivacyStatusTone] = useState('neutral')
+  const [locationDeletePending, setLocationDeletePending] = useState(false)
   const [token, setToken]               = useState(localStorage.getItem('tg_token') || '')
   const [currentUser, setCurrentUser]   = useState(null)
   const [authMode, setAuthMode]         = useState('login')
@@ -161,6 +173,7 @@ export default function MapPage() {
   const [authErr, setAuthErr]           = useState('')
   const [authForm, setAuthForm]         = useState({ email: '', password: '', display_name: '' })
   const [profileOpen, setProfileOpen]   = useState(false)
+  const [accountMenuOpen, setAccountMenuOpen] = useState(false)
   const [uploadingReportId, setUploadingReportId] = useState(null)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [settingsTab, setSettingsTab] = useState('appearance')
@@ -380,7 +393,7 @@ export default function MapPage() {
     if (!token || trackingSessionIdRef.current) return
     try {
       const res = await axios.post(`${API}/location/sessions/start`, {
-        consent_version: '2026-04-location-history-v1',
+        consent_version: LOCATION_CONSENT_VERSION,
       }, {
         headers: { Authorization: `Bearer ${token}` },
       })
@@ -390,6 +403,59 @@ export default function MapPage() {
     } catch (err) {
       console.error(err)
       setLocateError('Could not start location history right now. Live map tracking still works.')
+    }
+  }
+
+  function openLocationPrivacySettings() {
+    setSettingsTab('account')
+    setSettingsOpen(true)
+  }
+
+  function openPrivacyPolicyPage() {
+    window.location.hash = '/privacy-policy'
+  }
+
+  async function deleteLocationHistory() {
+    if (!token) {
+      setAuthMode('login')
+      setAuthOpen(true)
+      setLocateError('Login required to manage saved location history.')
+      return
+    }
+
+    const confirmed = window.confirm(
+      'Delete all saved private location history from your account? This removes every saved tracking session and cannot be undone.'
+    )
+    if (!confirmed) return
+
+    setLocationDeletePending(true)
+    setLocationPrivacyStatus('')
+
+    try {
+      if (watchIdRef.current !== null && navigator.geolocation) {
+        navigator.geolocation.clearWatch(watchIdRef.current)
+        watchIdRef.current = null
+      }
+      await stopTrackingSession()
+      pendingLocationPointsRef.current = []
+      setLiveTracking(false)
+
+      const res = await axios.delete(`${API}/location/history`, {
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      const deletedPoints = Number(res.data?.deleted_points || 0)
+      const deletedSessions = Number(res.data?.deleted_sessions || 0)
+      setLocationPrivacyStatusTone('success')
+      setLocationPrivacyStatus(
+        `Deleted ${formatCount(deletedPoints, 'saved location point')} across ${formatCount(deletedSessions, 'tracking session')}.`
+      )
+      setLocateError('')
+    } catch (err) {
+      console.error(err)
+      setLocationPrivacyStatusTone('error')
+      setLocationPrivacyStatus(err?.response?.data?.detail || 'Could not delete saved location history right now.')
+    } finally {
+      setLocationDeletePending(false)
     }
   }
 
@@ -598,11 +664,10 @@ export default function MapPage() {
     }
 
     if (!locationConsentAccepted) {
-      const consent = window.confirm(
-        'While Live Tracking is ON, we save your route history to your account so you can review cleanup history over time. You can stop anytime and clear history later in settings. Continue?'
-      )
-      if (!consent) return
-      setLocationConsentAccepted(true)
+      setLocationPrivacyStatusTone('neutral')
+      setLocationPrivacyStatus('Review the location privacy details and confirm storage before turning live tracking on.')
+      setLocationConsentPromptOpen(true)
+      return
     }
 
     handleLocateMe()
@@ -810,6 +875,8 @@ export default function MapPage() {
     setLiveTracking(false)
     setToken('')
     setCurrentUser(null)
+    setProfileOpen(false)
+    setAccountMenuOpen(false)
   }
 
   const counts   = SEVERITIES.reduce((acc, s) => { acc[s] = reports.filter(r => r.severity === s && !r.picked_up).length; return acc }, {})
@@ -848,21 +915,10 @@ export default function MapPage() {
           </span>
         ))}
         <button
-          onClick={() => {
-            setSettingsTab('appearance')
-            setSettingsOpen(true)
-          }}
-          title="Settings"
-          aria-label="Open settings"
-          style={{ marginLeft: 'auto', width: 34, height: 34, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', background: '#2b365a', border: '1px solid #5f6c93', color: '#fff', borderRadius: 8, cursor: 'pointer', fontSize: 16 }}
-        >
-          <span aria-hidden="true">⚙️</span>
-        </button>
-        <button
           onClick={handleGpsControl}
           title={liveTracking ? 'Stop live tracking' : 'Center on my location and enable live tracking'}
           aria-label={liveTracking ? 'Stop live tracking' : 'Center on my location and enable live tracking'}
-          style={{ width: 34, height: 34, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', background: liveTracking ? '#2e7d32' : 'none', border: '1px solid #555', color: '#fff', borderRadius: 8, cursor: 'pointer' }}
+          style={{ marginLeft: 'auto', width: 34, height: 34, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', background: liveTracking ? '#2e7d32' : 'none', border: '1px solid #555', color: '#fff', borderRadius: 8, cursor: 'pointer' }}
         >
           <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
             <circle cx="12" cy="12" r="3"/>
@@ -873,16 +929,6 @@ export default function MapPage() {
             <line x1="19" y1="12" x2="22" y2="12"/>
           </svg>
         </button>
-        {liveTracking && (
-          <span style={{ fontSize: 11, padding: '4px 8px', borderRadius: 999, border: '1px solid rgba(255,255,255,0.35)', background: 'rgba(22, 83, 38, 0.72)', color: '#fff', fontWeight: 700 }}>
-            Recording location history (tracking ON)
-          </span>
-        )}
-        {!liveTracking && locationConsentAccepted && (
-          <span style={{ fontSize: 11, color: '#cfd8f3' }}>
-            Location history saves only while tracking is ON.
-          </span>
-        )}
         <button
           onClick={handleFindNearbyCleanup}
           style={{ background: '#17324f', border: '1px solid #4a6f94', color: '#fff', borderRadius: 8, padding: '4px 10px', cursor: 'pointer', fontSize: 13, fontWeight: 600 }}
@@ -895,30 +941,13 @@ export default function MapPage() {
         >
           Report environmental incident
         </button>
-        {!currentUser ? (
-          <button
-            onClick={() => { setAuthMode('login'); setAuthOpen(true) }}
-            style={{ background: '#1976d2', border: 'none', color: '#fff', borderRadius: 8, padding: '4px 10px', cursor: 'pointer', fontSize: 13 }}
-          >
-            Login
-          </button>
-        ) : (
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <span style={{ fontSize: 12, color: '#c9d3ff' }}>{currentUser.display_name || currentUser.email}</span>
-            <button
-              onClick={() => setProfileOpen(v => !v)}
-              style={{ background: 'none', border: '1px solid #555', color: '#fff', borderRadius: 8, padding: '4px 10px', cursor: 'pointer', fontSize: 13 }}
-            >
-              {profileOpen ? 'Hide profile' : 'Profile'}
-            </button>
-            <button
-              onClick={logout}
-              style={{ background: 'none', border: '1px solid #555', color: '#fff', borderRadius: 8, padding: '4px 10px', cursor: 'pointer', fontSize: 13 }}
-            >
-              Logout
-            </button>
-          </div>
-        )}
+        <button
+          onClick={() => setAccountMenuOpen(v => !v)}
+          style={{ background: '#2b365a', border: '1px solid #5f6c93', color: '#fff', borderRadius: 8, padding: '4px 10px', cursor: 'pointer', fontSize: 13, fontWeight: 600 }}
+        >
+          {currentUser ? (currentUser.display_name || 'Profile') : 'Profile'}
+        </button>
+
       </div>
 
       {/* Map */}
@@ -1025,6 +1054,64 @@ export default function MapPage() {
           </div>
         )}
 
+        {locationConsentPromptOpen && (
+          <div className="settings-overlay" onClick={() => setLocationConsentPromptOpen(false)}>
+            <div className="settings-modal privacy-consent-modal" onClick={(e) => e.stopPropagation()}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
+                <h3 style={{ margin: 0, fontSize: 19 }}>Allow private location history?</h3>
+                <button
+                  onClick={() => setLocationConsentPromptOpen(false)}
+                  className="modal-close-btn"
+                  aria-label="Close privacy consent"
+                >
+                  <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round"><line x1="1" y1="1" x2="13" y2="13"/><line x1="13" y1="1" x2="1" y2="13"/></svg>
+                </button>
+              </div>
+
+              <div className="privacy-settings-copy">
+                <p>{LOCATION_PRIVACY_SUMMARY}</p>
+                <p>{LOCATION_PRIVACY_USE}</p>
+                <p>{LOCATION_PRIVACY_PUBLIC}</p>
+                <p>Tracking can be stopped at any time, and deletion controls remain available in Settings.</p>
+              </div>
+
+              <div className="privacy-settings-actions">
+                <button
+                  type="button"
+                  className="location-privacy-button"
+                  onClick={openPrivacyPolicyPage}
+                >
+                  View full privacy policy
+                </button>
+                <button
+                  type="button"
+                  className="location-privacy-button"
+                  onClick={() => {
+                    setLocationConsentPromptOpen(false)
+                    openLocationPrivacySettings()
+                  }}
+                >
+                  Review in settings
+                </button>
+                <button
+                  type="button"
+                  className="location-privacy-button primary"
+                  onClick={() => {
+                    setLocationConsentAccepted(true)
+                    setLocationConsentPromptOpen(false)
+                    setLocationPrivacyStatusTone('success')
+                    setLocationPrivacyStatus('Private location history enabled. Live tracking will save only while tracking is ON.')
+                    handleLocateMe()
+                    setLiveTracking(true)
+                  }}
+                >
+                  Accept and turn tracking on
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
         {settingsOpen && (
           <div className="settings-overlay" onClick={() => setSettingsOpen(false)}>
             <div className="settings-modal" onClick={(e) => e.stopPropagation()}>
@@ -1065,7 +1152,7 @@ export default function MapPage() {
                   className={`settings-tab ${settingsTab === 'account' ? 'active' : ''}`}
                   onClick={() => setSettingsTab('account')}
                 >
-                  Account
+                  Privacy
                 </button>
               </div>
 
@@ -1134,12 +1221,141 @@ export default function MapPage() {
 
               {settingsTab === 'account' && (
                 <div className="settings-section">
-                  <div className="settings-title">Account & sync (coming soon)</div>
-                  <div style={{ fontSize: 13, color: '#44537a', lineHeight: 1.5 }}>
-                    This section is reserved for cross-device preferences and account-level settings.
-                    Later, the same categories can be mirrored in Expo for a native app feel.
+                  <div className="settings-title">Location privacy & deletion</div>
+                  <div className="privacy-settings-copy">
+                    <p>{LOCATION_PRIVACY_SUMMARY}</p>
+                    <p>{LOCATION_PRIVACY_USE}</p>
+                    <p>{LOCATION_PRIVACY_PUBLIC}</p>
+                    <p>
+                      Saved history is private to your authenticated account and is only recorded while Live Tracking is ON.
+                      You can stop tracking at any time and permanently delete all saved location history here.
+                    </p>
+                  </div>
+
+                  <div className="privacy-settings-state">
+                    <span className={`privacy-state-pill ${liveTracking ? 'active' : ''}`}>
+                      {liveTracking ? 'Tracking ON' : 'Tracking OFF'}
+                    </span>
+                    <span className={`privacy-state-pill ${locationConsentAccepted ? 'active' : ''}`}>
+                      {locationConsentAccepted ? 'Consent recorded' : 'Consent required'}
+                    </span>
+                    <span className={`privacy-state-pill ${currentUser ? 'active' : ''}`}>
+                      {currentUser ? 'Authenticated storage enabled' : 'Login required for saved history'}
+                    </span>
+                  </div>
+
+                  {!currentUser && (
+                    <div className="privacy-settings-note">
+                      Log in before enabling saved location history or requesting deletion.
+                    </div>
+                  )}
+
+                  {locationPrivacyStatus && (
+                    <div className={`location-privacy-status ${locationPrivacyStatusTone}`} style={{ marginTop: 12 }}>
+                      {locationPrivacyStatus}
+                    </div>
+                  )}
+
+                  <div className="privacy-settings-actions">
+                    {!locationConsentAccepted && currentUser && (
+                      <button
+                        type="button"
+                        className="location-privacy-button primary"
+                        onClick={() => {
+                          setLocationConsentAccepted(true)
+                          setLocationPrivacyStatusTone('success')
+                          setLocationPrivacyStatus('Private location history enabled. Live tracking will save only while tracking is ON.')
+                        }}
+                      >
+                        Allow private location history
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      className="location-privacy-button"
+                      onClick={openPrivacyPolicyPage}
+                    >
+                      View full privacy policy
+                    </button>
+                    {liveTracking && (
+                      <button
+                        type="button"
+                        className="location-privacy-button"
+                        onClick={() => setLiveTracking(false)}
+                      >
+                        Stop live tracking
+                      </button>
+                    )}
+                    {currentUser && (
+                      <button
+                        type="button"
+                        className="location-privacy-button danger"
+                        onClick={deleteLocationHistory}
+                        disabled={locationDeletePending}
+                      >
+                        {locationDeletePending ? 'Deleting history...' : 'Delete all saved location history'}
+                      </button>
+                    )}
                   </div>
                 </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {accountMenuOpen && (
+          <div style={{ position: 'absolute', top: 12, right: 12, width: 250, background: 'rgba(255,255,255,0.98)', borderRadius: 10, boxShadow: '0 8px 24px rgba(0,0,0,0.2)', zIndex: 561, padding: 10 }}>
+            {currentUser ? (
+              <div style={{ fontSize: 12, color: '#44537a', marginBottom: 8, borderBottom: '1px solid #e6ebfb', paddingBottom: 8 }}>
+                Signed in as <strong>{currentUser.display_name || currentUser.email}</strong>
+              </div>
+            ) : (
+              <div style={{ fontSize: 12, color: '#44537a', marginBottom: 8, borderBottom: '1px solid #e6ebfb', paddingBottom: 8 }}>
+                Not signed in
+              </div>
+            )}
+
+            <div style={{ display: 'grid', gap: 8 }}>
+              <button
+                onClick={() => {
+                  setSettingsTab('appearance')
+                  setSettingsOpen(true)
+                  setAccountMenuOpen(false)
+                }}
+                style={{ textAlign: 'left', border: '1px solid #d2dbf5', background: '#fff', color: '#2f3a5f', borderRadius: 8, padding: '8px 10px', cursor: 'pointer', fontSize: 13, fontWeight: 600 }}
+              >
+                Open settings
+              </button>
+
+              {currentUser ? (
+                <>
+                  <button
+                    onClick={() => {
+                      setProfileOpen(true)
+                      setAccountMenuOpen(false)
+                    }}
+                    style={{ textAlign: 'left', border: '1px solid #d2dbf5', background: '#fff', color: '#2f3a5f', borderRadius: 8, padding: '8px 10px', cursor: 'pointer', fontSize: 13, fontWeight: 600 }}
+                  >
+                    View profile
+                  </button>
+                  <button
+                    onClick={logout}
+                    style={{ textAlign: 'left', border: '1px solid #f0caca', background: '#fff5f5', color: '#8f2d2d', borderRadius: 8, padding: '8px 10px', cursor: 'pointer', fontSize: 13, fontWeight: 700 }}
+                  >
+                    Logout
+                  </button>
+                </>
+              ) : (
+                <button
+                  onClick={() => {
+                    setAuthMode('login')
+                    setAuthOpen(true)
+                    setAccountMenuOpen(false)
+                  }}
+                  style={{ textAlign: 'left', border: '1px solid #b9d4ff', background: '#edf4ff', color: '#1f4f8f', borderRadius: 8, padding: '8px 10px', cursor: 'pointer', fontSize: 13, fontWeight: 700 }}
+                >
+                  Login / create account
+                </button>
               )}
             </div>
           </div>
