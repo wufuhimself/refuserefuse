@@ -1064,7 +1064,7 @@ export default function MapPage() {
                   className="modal-close-btn"
                   aria-label="Close privacy consent"
                 >
-                  <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round"><line x1="1" y1="1" x2="13" y2="13"/><line x1="13" y1="1" x2="1" y2="13"/></svg>
+                  ×
                 </button>
               </div>
 
@@ -1122,7 +1122,7 @@ export default function MapPage() {
                   className="modal-close-btn"
                   aria-label="Close settings"
                 >
-                  <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round"><line x1="1" y1="1" x2="13" y2="13"/><line x1="13" y1="1" x2="1" y2="13"/></svg>
+                  ×
                 </button>
               </div>
 
@@ -1331,12 +1331,12 @@ export default function MapPage() {
                 <>
                   <button
                     onClick={() => {
-                      setProfileOpen(true)
+                      setProfileOpen(v => !v)
                       setAccountMenuOpen(false)
                     }}
                     style={{ textAlign: 'left', border: '1px solid #d2dbf5', background: '#fff', color: '#2f3a5f', borderRadius: 8, padding: '8px 10px', cursor: 'pointer', fontSize: 13, fontWeight: 600 }}
                   >
-                    View profile
+                    {profileOpen ? 'Hide profile' : 'View profile'}
                   </button>
                   <button
                     onClick={logout}
@@ -1406,7 +1406,17 @@ export default function MapPage() {
 
         {profileOpen && currentUser && (
           <div style={{ position: 'absolute', top: 12, right: 12, width: 280, background: 'rgba(255,255,255,0.96)', borderRadius: 10, boxShadow: '0 8px 24px rgba(0,0,0,0.2)', zIndex: 560, padding: 12 }}>
-            <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 4 }}>Profile</div>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 }}>
+              <div style={{ fontSize: 16, fontWeight: 700 }}>Profile</div>
+              <button
+                onClick={() => setProfileOpen(false)}
+                aria-label="Close profile"
+                title="Close profile"
+                style={{ border: '1px solid #d3dcf3', background: '#fff', color: '#415078', borderRadius: 8, width: 28, height: 28, cursor: 'pointer', fontSize: 16, lineHeight: 1 }}
+              >
+                ×
+              </button>
+            </div>
             <div style={{ fontSize: 13, color: '#444', marginBottom: 10 }}>
               {currentUser.display_name || 'No display name'}
               <div style={{ fontSize: 12, color: '#666' }}>{currentUser.email}</div>
@@ -1469,7 +1479,7 @@ export default function MapPage() {
                     Document illegal dumping or contamination and escalate with evidence.
                   </div>
                 </div>
-                <button onClick={() => { setIncidentOpen(false); resetIncidentForm() }} className="modal-close-btn" aria-label="Close incident workflow"><svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round"><line x1="1" y1="1" x2="13" y2="13"/><line x1="13" y1="1" x2="1" y2="13"/></svg></button>
+                <button onClick={() => { setIncidentOpen(false); resetIncidentForm() }} className="modal-close-btn" aria-label="Close incident workflow">×</button>
               </div>
 
               <form onSubmit={submitIncident}>
@@ -1615,7 +1625,7 @@ export default function MapPage() {
           <div style={{ position: 'absolute', bottom: 0, left: 0, right: 0, background: '#fff', borderRadius: '16px 16px 0 0', boxShadow: '0 -4px 24px rgba(0,0,0,0.22)', padding: '20px 20px 32px', zIndex: 500 }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
               <h3 style={{ margin: 0, fontSize: 16 }}>New Trash Report</h3>
-              <button onClick={cancelForm} className="modal-close-btn" aria-label="Close report form"><svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round"><line x1="1" y1="1" x2="13" y2="13"/><line x1="13" y1="1" x2="1" y2="13"/></svg></button>
+              <button onClick={cancelForm} className="modal-close-btn" aria-label="Close report form">×</button>
             </div>
 
             <form onSubmit={submitReport}>
@@ -1663,7 +1673,7 @@ export default function MapPage() {
             <div style={{ width: 'min(420px, 92vw)', background: '#fff', borderRadius: 12, padding: 18, boxShadow: '0 8px 28px rgba(0,0,0,0.28)' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
                 <h3 style={{ margin: 0, fontSize: 18 }}>{authMode === 'login' ? 'Login' : 'Create account'}</h3>
-                <button onClick={() => setAuthOpen(false)} className="modal-close-btn" aria-label="Close authentication dialog"><svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round"><line x1="1" y1="1" x2="13" y2="13"/><line x1="13" y1="1" x2="1" y2="13"/></svg></button>
+                <button onClick={() => setAuthOpen(false)} className="modal-close-btn" aria-label="Close authentication dialog">×</button>
               </div>
 
               <form onSubmit={submitAuth}>
