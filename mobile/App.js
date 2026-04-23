@@ -1,6 +1,8 @@
 import React, { useEffect, useRef, useState } from 'react'
 import {
+  Alert,
   Animated,
+  Image,
   Modal,
   Platform,
   Pressable,
@@ -20,6 +22,7 @@ import { StatusBar } from 'expo-status-bar'
 import * as AppleAuthentication from 'expo-apple-authentication'
 import * as Google from 'expo-auth-session/providers/google'
 import * as Haptics from 'expo-haptics'
+import * as ImagePicker from 'expo-image-picker'
 import * as Location from 'expo-location'
 import * as WebBrowser from 'expo-web-browser'
 import { Ionicons } from '@expo/vector-icons'
@@ -137,6 +140,7 @@ function AppContent() {
   const [cleanupCelebrateVisible, setCleanupCelebrateVisible] = useState(false)
   const [pendingCoordinate, setPendingCoordinate] = useState(null)
   const [reportDraft, setReportDraft] = useState(DEFAULT_REPORT_DRAFT)
+  const [reportPhoto, setReportPhoto] = useState(null)
   const [apiBaseUrl] = useState(resolveApiBaseUrl())
   const [googleRequest, googleResponse, promptGoogleSignIn] = Google.useIdTokenAuthRequest({
     expoClientId: GOOGLE_EXPO_CLIENT_ID || undefined,
@@ -669,6 +673,7 @@ function AppContent() {
   function openReportComposer(coordinate) {
     setPendingCoordinate(coordinate)
     setReportDraft(DEFAULT_REPORT_DRAFT)
+    setReportPhoto(null)
     setReportOpen(true)
   }
 
@@ -709,6 +714,13 @@ function AppContent() {
         fd.append('notes', reportDraft.notes || '')
         fd.append('picked_up', reportDraft.picked_up)
       }
+      if (reportPhoto) {
+        fd.append('file', {
+          uri: reportPhoto.uri,
+          name: reportPhoto.fileName || 'photo.jpg',
+          type: reportPhoto.mimeType || 'image/jpeg',
+        })
+      }
 
       const res = await fetch(`${apiBaseUrl}/reports`, {
         method: 'POST',
@@ -730,6 +742,7 @@ function AppContent() {
       }
       setReportOpen(false)
       setReportDraft(DEFAULT_REPORT_DRAFT)
+      setReportPhoto(null)
       setPendingCoordinate(null)
     } catch (err) {
       alert(err?.message || 'Failed to submit report')
@@ -1077,8 +1090,10 @@ function AppContent() {
           compact={isCompactScreen}
           draft={reportDraft}
           coordinate={pendingCoordinate}
-          onClose={() => setReportOpen(false)}
+          photo={reportPhoto}
+          onClose={() => { setReportOpen(false); setReportPhoto(null) }}
           onDraftChange={setReportDraft}
+          onPhotoChange={setReportPhoto}
           onSubmit={submitReport}
         />
       </SafeAreaView>
@@ -1408,13 +1423,57 @@ function StatPanel({ accent, label, tint, value }) {
   )
 }
 
-function ReportComposer({ visible, compact, draft, coordinate, onClose, onDraftChange, onSubmit }) {
+function ReportComposer({ visible, compact, draft, coordinate, photo, onClose, onDraftChange, onPhotoChange, onSubmit }) {
   const isIncident = draft.reportType === 'incident'
+  const { height: windowHeight } = useWindowDimensions()
+  const sheetHeight = compact ? Math.min(windowHeight * 0.74, 510) : Math.min(windowHeight * 0.76, 600)
+
+  async function pickPhoto() {
+    Alert.alert(
+      'Add photo',
+      'Choose how to add a photo',
+      [
+        {
+          text: 'Take photo',
+          onPress: async () => {
+            const perm = await ImagePicker.requestCameraPermissionsAsync()
+            if (perm.status !== 'granted') {
+              Alert.alert('Permission required', 'Camera access is needed to take a photo.')
+              return
+            }
+            const result = await ImagePicker.launchCameraAsync({
+              mediaTypes: ['images'],
+              allowsEditing: true,
+              quality: 0.8,
+            })
+            if (!result.canceled) onPhotoChange(result.assets[0])
+          },
+        },
+        {
+          text: 'Choose from library',
+          onPress: async () => {
+            const perm = await ImagePicker.requestMediaLibraryPermissionsAsync()
+            if (perm.status !== 'granted') {
+              Alert.alert('Permission required', 'Photo library access is needed to select a photo.')
+              return
+            }
+            const result = await ImagePicker.launchImageLibraryAsync({
+              mediaTypes: ['images'],
+              allowsEditing: true,
+              quality: 0.8,
+            })
+            if (!result.canceled) onPhotoChange(result.assets[0])
+          },
+        },
+        { text: 'Cancel', style: 'cancel' },
+      ],
+    )
+  }
 
   return (
     <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
       <View style={styles.sheetBackdrop}>
-        <View style={[styles.reportSheet, compact ? styles.reportSheetCompact : null]}>
+        <View style={[styles.reportSheet, { height: sheetHeight }, compact ? styles.reportSheetCompact : null]}>
           <View style={styles.modalHeader}>
             <Text style={styles.modalTitle}>Report refuse</Text>
             <TouchableOpacity style={styles.modalCloseButton} onPress={onClose}>
@@ -1422,112 +1481,134 @@ function ReportComposer({ visible, compact, draft, coordinate, onClose, onDraftC
             </TouchableOpacity>
           </View>
 
-          <Text style={styles.coordinateText}>
-            {coordinate ? `${coordinate.latitude.toFixed(5)}, ${coordinate.longitude.toFixed(5)}` : 'Tap the map to set a location'}
-          </Text>
+          <ScrollView
+            style={{ flex: 1 }}
+            contentContainerStyle={compact ? styles.reportSheetScrollContentCompact : styles.reportSheetScrollContent}
+            keyboardShouldPersistTaps="handled"
+            showsVerticalScrollIndicator={false}
+          >
+            <Text style={styles.coordinateText}>
+              {coordinate ? `${coordinate.latitude.toFixed(5)}, ${coordinate.longitude.toFixed(5)}` : 'Tap the map to set a location'}
+            </Text>
 
-          <Text style={styles.inputLabel}>Report type</Text>
-          <View style={styles.severityRow}>
-            <TouchableOpacity
-              style={[
-                styles.sheetSeverityButton,
-                !isIncident ? { backgroundColor: '#2f5d3a', borderColor: '#2f5d3a' } : null,
-              ]}
-              onPress={() => onDraftChange({ ...draft, reportType: 'trash', picked_up: draft.picked_up })}
-            >
-              <Text style={[styles.sheetSeverityText, !isIncident ? styles.sheetSeverityTextActive : null]}>Trash cleanup</Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={[
-                styles.sheetSeverityButton,
-                isIncident ? { backgroundColor: '#7f1d1d', borderColor: '#7f1d1d' } : null,
-              ]}
-              onPress={() => onDraftChange({ ...draft, reportType: 'incident', picked_up: false })}
-            >
-              <Text style={[styles.sheetSeverityText, isIncident ? styles.sheetSeverityTextActive : null]}>Environmental incident</Text>
-            </TouchableOpacity>
-          </View>
-          <Text style={styles.helperText}>{isIncident ? 'Use this when there is dumping, contamination, or urgent environmental harm.' : 'Use this for standard trash or debris reports.'}</Text>
+            <Text style={styles.inputLabel}>Report type</Text>
+            <View style={styles.severityRow}>
+              <TouchableOpacity
+                style={[
+                  styles.sheetSeverityButton,
+                  !isIncident ? { backgroundColor: '#2f5d3a', borderColor: '#2f5d3a' } : null,
+                ]}
+                onPress={() => onDraftChange({ ...draft, reportType: 'trash', picked_up: draft.picked_up })}
+              >
+                <Text style={[styles.sheetSeverityText, !isIncident ? styles.sheetSeverityTextActive : null]}>Trash cleanup</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[
+                  styles.sheetSeverityButton,
+                  isIncident ? { backgroundColor: '#7f1d1d', borderColor: '#7f1d1d' } : null,
+                ]}
+                onPress={() => onDraftChange({ ...draft, reportType: 'incident', picked_up: false })}
+              >
+                <Text style={[styles.sheetSeverityText, isIncident ? styles.sheetSeverityTextActive : null]}>Environmental incident</Text>
+              </TouchableOpacity>
+            </View>
+            <Text style={styles.helperText}>{isIncident ? 'Use this when there is dumping, contamination, or urgent environmental harm.' : 'Use this for standard trash or debris reports.'}</Text>
 
-          {!isIncident ? (
-            <>
-              <Text style={styles.inputLabel}>Severity</Text>
-              <View style={styles.severityRow}>
-                {SEVERITIES.map((severity) => (
+            {!isIncident ? (
+              <>
+                <Text style={styles.inputLabel}>Severity</Text>
+                <View style={styles.severityRow}>
+                  {SEVERITIES.map((severity) => (
+                    <TouchableOpacity
+                      key={severity}
+                      style={[
+                        styles.sheetSeverityButton,
+                        draft.severity === severity ? { backgroundColor: SEV_COLOR[severity], borderColor: SEV_COLOR[severity] } : null,
+                      ]}
+                      onPress={() => onDraftChange({ ...draft, severity })}
+                    >
+                      <Text style={[styles.sheetSeverityText, draft.severity === severity ? styles.sheetSeverityTextActive : null]}>{severity}</Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+              </>
+            ) : (
+              <>
+                <Text style={styles.inputLabel}>Incident type</Text>
+                <View style={styles.severityRow}>
                   <TouchableOpacity
-                    key={severity}
                     style={[
                       styles.sheetSeverityButton,
-                      draft.severity === severity ? { backgroundColor: SEV_COLOR[severity], borderColor: SEV_COLOR[severity] } : null,
+                      draft.incidentKind === 'illegal_dumping' ? { backgroundColor: '#b71c1c', borderColor: '#b71c1c' } : null,
                     ]}
-                    onPress={() => onDraftChange({ ...draft, severity })}
+                    onPress={() => onDraftChange({ ...draft, incidentKind: 'illegal_dumping' })}
                   >
-                    <Text style={[styles.sheetSeverityText, draft.severity === severity ? styles.sheetSeverityTextActive : null]}>{severity}</Text>
+                    <Text style={[styles.sheetSeverityText, draft.incidentKind === 'illegal_dumping' ? styles.sheetSeverityTextActive : null]}>Illegal dumping</Text>
                   </TouchableOpacity>
-                ))}
-              </View>
-            </>
-          ) : (
-            <>
-              <Text style={styles.inputLabel}>Incident type</Text>
-              <View style={styles.severityRow}>
-                <TouchableOpacity
-                  style={[
-                    styles.sheetSeverityButton,
-                    draft.incidentKind === 'illegal_dumping' ? { backgroundColor: '#b71c1c', borderColor: '#b71c1c' } : null,
-                  ]}
-                  onPress={() => onDraftChange({ ...draft, incidentKind: 'illegal_dumping' })}
-                >
-                  <Text style={[styles.sheetSeverityText, draft.incidentKind === 'illegal_dumping' ? styles.sheetSeverityTextActive : null]}>Illegal dumping</Text>
-                </TouchableOpacity>
-                <TouchableOpacity
-                  style={[
-                    styles.sheetSeverityButton,
-                    draft.incidentKind === 'ground_contamination' ? { backgroundColor: '#8b0000', borderColor: '#8b0000' } : null,
-                  ]}
-                  onPress={() => onDraftChange({ ...draft, incidentKind: 'ground_contamination' })}
-                >
-                  <Text style={[styles.sheetSeverityText, draft.incidentKind === 'ground_contamination' ? styles.sheetSeverityTextActive : null]}>Ground contamination</Text>
-                </TouchableOpacity>
-              </View>
+                  <TouchableOpacity
+                    style={[
+                      styles.sheetSeverityButton,
+                      draft.incidentKind === 'ground_contamination' ? { backgroundColor: '#8b0000', borderColor: '#8b0000' } : null,
+                    ]}
+                    onPress={() => onDraftChange({ ...draft, incidentKind: 'ground_contamination' })}
+                  >
+                    <Text style={[styles.sheetSeverityText, draft.incidentKind === 'ground_contamination' ? styles.sheetSeverityTextActive : null]}>Ground contamination</Text>
+                  </TouchableOpacity>
+                </View>
 
-              <Text style={styles.inputLabel}>Suspected source (optional)</Text>
-              <TextInput
-                placeholder="Company, vehicle, site owner..."
-                placeholderTextColor="#8190b2"
-                style={styles.inputField}
-                value={draft.suspectedSource}
-                onChangeText={(suspectedSource) => onDraftChange({ ...draft, suspectedSource })}
-              />
+                <Text style={styles.inputLabel}>Suspected source (optional)</Text>
+                <TextInput
+                  placeholder="Company, vehicle, site owner..."
+                  placeholderTextColor="#8190b2"
+                  style={styles.inputField}
+                  value={draft.suspectedSource}
+                  onChangeText={(suspectedSource) => onDraftChange({ ...draft, suspectedSource })}
+                />
 
+                <View style={styles.switchRow}>
+                  <Text style={styles.switchLabel}>Immediate hazard</Text>
+                  <Switch value={draft.immediateHazard} onValueChange={(immediateHazard) => onDraftChange({ ...draft, immediateHazard })} />
+                </View>
+              </>
+            )}
+
+            <Text style={styles.inputLabel}>Notes</Text>
+            <TextInput
+              multiline
+              numberOfLines={3}
+              placeholder={isIncident ? 'Describe what you observed and any danger...' : 'Optional description...'}
+              placeholderTextColor="#8190b2"
+              style={[styles.textArea, compact ? styles.textAreaCompact : null]}
+              value={draft.notes}
+              onChangeText={(notes) => onDraftChange({ ...draft, notes })}
+            />
+
+            {!isIncident ? (
               <View style={styles.switchRow}>
-                <Text style={styles.switchLabel}>Immediate hazard</Text>
-                <Switch value={draft.immediateHazard} onValueChange={(immediateHazard) => onDraftChange({ ...draft, immediateHazard })} />
+                <Text style={styles.switchLabel}>I already cleaned it up</Text>
+                <Switch value={draft.picked_up} onValueChange={(picked_up) => onDraftChange({ ...draft, picked_up })} />
               </View>
-            </>
-          )}
+            ) : null}
 
-          <Text style={styles.inputLabel}>Notes</Text>
-          <TextInput
-            multiline
-            numberOfLines={3}
-            placeholder={isIncident ? 'Describe what you observed and any danger...' : 'Optional description...'}
-            placeholderTextColor="#8190b2"
-            style={[styles.textArea, compact ? styles.textAreaCompact : null]}
-            value={draft.notes}
-            onChangeText={(notes) => onDraftChange({ ...draft, notes })}
-          />
+            <TouchableOpacity style={styles.photoButton} onPress={pickPhoto}>
+              <Ionicons name={photo ? 'checkmark-circle-outline' : 'camera-outline'} size={16} color={photo ? '#2f5d3a' : '#65718f'} />
+              <Text style={[styles.photoButtonText, photo ? styles.photoButtonTextActive : null]}>
+                {photo ? 'Photo attached · tap to change' : 'Add photo (optional)'}
+              </Text>
+            </TouchableOpacity>
+            {photo ? (
+              <View style={styles.photoPreviewRow}>
+                <Image source={{ uri: photo.uri }} style={styles.photoThumb} />
+                <TouchableOpacity onPress={() => onPhotoChange(null)} style={styles.photoRemoveBtn}>
+                  <Ionicons name="close-circle" size={20} color="#b71c1c" />
+                </TouchableOpacity>
+              </View>
+            ) : null}
 
-          {!isIncident ? (
-            <View style={styles.switchRow}>
-              <Text style={styles.switchLabel}>I already cleaned it up</Text>
-              <Switch value={draft.picked_up} onValueChange={(picked_up) => onDraftChange({ ...draft, picked_up })} />
-            </View>
-          ) : null}
-
-          <TouchableOpacity style={styles.primaryButton} onPress={onSubmit}>
-            <Text style={styles.primaryButtonText}>{isIncident ? 'Save incident report' : 'Save report'}</Text>
-          </TouchableOpacity>
+            <TouchableOpacity style={styles.primaryButton} onPress={onSubmit}>
+              <Text style={styles.primaryButtonText}>{isIncident ? 'Save incident report' : 'Save report'}</Text>
+            </TouchableOpacity>
+          </ScrollView>
         </View>
       </View>
     </Modal>
@@ -2333,14 +2414,54 @@ const styles = StyleSheet.create({
     backgroundColor: '#fff',
     paddingHorizontal: 18,
     paddingTop: 18,
-    paddingBottom: 32,
-    gap: 12,
   },
   reportSheetCompact: {
     paddingHorizontal: 14,
     paddingTop: 14,
-    paddingBottom: 22,
+  },
+  reportSheetScrollContent: {
+    gap: 12,
+    paddingBottom: 32,
+  },
+  reportSheetScrollContentCompact: {
     gap: 10,
+    paddingBottom: 22,
+  },
+  photoButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderRadius: 10,
+    borderWidth: 1.5,
+    borderStyle: 'dashed',
+    borderColor: '#c4cce0',
+    backgroundColor: '#f7f8fb',
+  },
+  photoButtonText: {
+    color: '#65718f',
+    fontSize: 13,
+    fontFamily: 'SpaceGrotesk_500Medium',
+  },
+  photoButtonTextActive: {
+    color: '#2f5d3a',
+  },
+  photoPreviewRow: {
+    position: 'relative',
+  },
+  photoThumb: {
+    width: '100%',
+    height: 110,
+    borderRadius: 10,
+    resizeMode: 'cover',
+  },
+  photoRemoveBtn: {
+    position: 'absolute',
+    top: 6,
+    right: 6,
+    backgroundColor: '#fff',
+    borderRadius: 999,
   },
   coordinateText: {
     color: '#65718f',

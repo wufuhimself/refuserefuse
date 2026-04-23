@@ -1425,17 +1425,18 @@ export default function MapPage() {
         )}
 
         {pending && (
-          <div style={{ position: 'absolute', bottom: 0, left: 0, right: 0, background: '#fff', borderRadius: '16px 16px 0 0', boxShadow: '0 -4px 24px rgba(0,0,0,0.22)', padding: '20px 20px 32px', zIndex: 500 }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
-              <h3 style={{ margin: 0, fontSize: 16 }}>Report refuse</h3>
-              <button onClick={cancelForm} className="modal-close-btn" aria-label="Close report form">×</button>
+          <div style={{ position: 'absolute', bottom: 28, left: '50%', transform: 'translateX(-50%)', width: '75%', height: 540, background: '#fff', borderRadius: 16, boxShadow: '0 -2px 24px rgba(0,0,0,0.18)', zIndex: 500, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+            <div style={{ padding: '18px 20px 10px', flexShrink: 0 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+                <h3 style={{ margin: 0, fontSize: 16 }}>Report refuse</h3>
+                <button onClick={cancelForm} className="modal-close-btn" aria-label="Close report form">×</button>
+              </div>
+              <div style={{ fontSize: 12, color: '#607091' }}>
+                {`${pending.lat.toFixed(5)}, ${pending.lng.toFixed(5)}`}
+              </div>
             </div>
 
-            <div style={{ fontSize: 12, color: '#607091', marginBottom: 10 }}>
-              {`${pending.lat.toFixed(5)}, ${pending.lng.toFixed(5)}`}
-            </div>
-
-            <form onSubmit={submitReport}>
+            <form onSubmit={submitReport} style={{ flex: 1, overflowY: 'auto', padding: '0 20px 24px' }}>
               <div style={{ marginBottom: 14 }}>
                 <label style={{ fontSize: 13, fontWeight: 600, display: 'block', marginBottom: 8 }}>Report type</label>
                 <div style={{ display: 'flex', gap: 6 }}>
@@ -1506,7 +1507,7 @@ export default function MapPage() {
 
               <div style={{ marginBottom: 12 }}>
                 <label style={{ fontSize: 13, fontWeight: 600, display: 'block', marginBottom: 6 }}>Notes</label>
-                <textarea value={form.notes} onChange={e => setForm(f => ({ ...f, notes: e.target.value }))} placeholder={form.reportType === 'incident' ? 'Describe the incident, hazards, and context...' : 'Optional description...'} rows={form.reportType === 'incident' ? 4 : 2}
+                <textarea value={form.notes} onChange={e => setForm(f => ({ ...f, notes: e.target.value }))} placeholder={form.reportType === 'incident' ? 'Describe the incident, hazards, and context...' : 'Optional description...'} rows={3}
                   style={{ width: '100%', boxSizing: 'border-box', borderRadius: 8, border: '1px solid #ddd', padding: '8px 10px', fontSize: 13, resize: 'none', outline: 'none' }} />
               </div>
 
