@@ -92,6 +92,16 @@ function formatCount(value, singular, plural = `${singular}s`) {
   return `${value} ${value === 1 ? singular : plural}`
 }
 
+const DEFAULT_REPORT_FORM = {
+  reportType: 'trash',
+  severity: 'light',
+  notes: '',
+  picked_up: false,
+  incidentKind: 'illegal_dumping',
+  immediateHazard: false,
+  suspectedSource: '',
+}
+
 function isIncidentReport(report) {
   return String(report?.notes || '').includes('[ENVIRONMENTAL INCIDENT]')
 }
@@ -155,7 +165,7 @@ function FlyToIncidentTarget({ target }) {
 export default function MapPage() {
   const [reports, setReports]           = useState([])
   const [pending, setPending]           = useState(null)
-  const [form, setForm]                 = useState({ severity: 'light', notes: '', picked_up: false })
+  const [form, setForm]                 = useState(DEFAULT_REPORT_FORM)
   const [photo, setPhoto]               = useState(null)
   const [submitting, setSubmitting]     = useState(false)
   const [userLocation, setUserLocation] = useState(null)
@@ -183,23 +193,12 @@ export default function MapPage() {
   const [cleanupTarget, setCleanupTarget] = useState(null)
   const [cleanupMessage, setCleanupMessage] = useState('')
   const [incidentFocusTarget, setIncidentFocusTarget] = useState(null)
-  const [incidentOpen, setIncidentOpen] = useState(false)
-  const [incidentSubmitting, setIncidentSubmitting] = useState(false)
-  const [incidentErr, setIncidentErr] = useState('')
-  const [incidentForm, setIncidentForm] = useState({
-    kind: 'illegal_dumping',
-    suspectedParty: '',
-    description: '',
-    immediateHazard: false,
-  })
-  const [incidentPhoto, setIncidentPhoto] = useState(null)
   const watchIdRef = useRef(null)
   const trackingSessionIdRef = useRef(null)
   const pendingLocationPointsRef = useRef([])
   const locationFlushTimerRef = useRef(null)
   const lastSentLocationRef = useRef(null)
   const fileRef = useRef()
-  const incidentFileRef = useRef()
   const googleRenderedRef = useRef(false)
   const appleInitRef = useRef(false)
   const activeTheme = MAP_THEMES.find((t) => t.id === mapTheme) || MAP_THEMES[0]
@@ -540,12 +539,49 @@ export default function MapPage() {
 
   function cancelForm() {
     setPending(null); setPhoto(null)
-    setForm({ severity: 'light', notes: '', picked_up: false })
+    setForm(DEFAULT_REPORT_FORM)
+  }
+
+  function openReportRefuse() {
+    setIncidentFocusTarget(null)
+    setPhoto(null)
+    setForm(DEFAULT_REPORT_FORM)
+    if (userLocation) {
+      setPending({ lat: userLocation.lat, lng: userLocation.lng })
+      return
+    }
+    setPending({ lat: 39.95, lng: -75.15 })
+    handleLocateMe()
+  }
+
+  function buildIncidentEvidenceText() {
+    const typeLabel = form.incidentKind === 'ground_contamination' ? 'Ground contamination' : 'Illegal dumping'
+    const coords = pending
+      ? `${pending.lat.toFixed(5)}, ${pending.lng.toFixed(5)}`
+      : 'Location not captured yet'
+
+    return [
+      '[ENVIRONMENTAL INCIDENT]',
+      `Type: ${typeLabel}`,
+      `Time recorded: ${new Date().toLocaleString()}`,
+      `Location: ${coords}`,
+      `Immediate hazard: ${form.immediateHazard ? 'Yes' : 'No'}`,
+      `Suspected source: ${form.suspectedSource || 'Not provided'}`,
+      `Details: ${form.notes || 'Not provided'}`,
+    ].join('\n')
   }
 
   async function submitReport(e) {
     e.preventDefault()
     if (!pending) return
+    if (form.reportType === 'incident' && !form.notes.trim()) {
+      alert('Please add incident details so agencies can investigate.')
+      return
+    }
+    if (form.reportType === 'incident' && nearbyIncidentDuplicate) {
+      alert('A similar incident was already reported nearby. Open the existing marker to avoid duplicate reports.')
+      return
+    }
     if (!token) {
       setAuthMode('login')
       setAuthOpen(true)
@@ -555,8 +591,15 @@ export default function MapPage() {
     try {
       const fd = new FormData()
       fd.append('lat', pending.lat); fd.append('lng', pending.lng)
-      fd.append('severity', form.severity); fd.append('notes', form.notes)
-      fd.append('picked_up', form.picked_up)
+      if (form.reportType === 'incident') {
+        fd.append('severity', form.incidentKind === 'ground_contamination' ? 'urgent' : 'trashy')
+        fd.append('notes', buildIncidentEvidenceText())
+        fd.append('picked_up', false)
+      } else {
+        fd.append('severity', form.severity)
+        fd.append('notes', form.notes)
+        fd.append('picked_up', form.picked_up)
+      }
       if (photo) fd.append('file', photo)
       await axios.post(`${API}/reports`, fd, {
         headers: { Authorization: `Bearer ${token}` },
@@ -713,94 +756,6 @@ export default function MapPage() {
     return `https://www.google.com/maps/dir/?api=1&origin=${encodeURIComponent(origin)}&destination=${encodeURIComponent(destination)}&travelmode=walking`
   }
 
-  function resetIncidentForm() {
-    setIncidentForm({
-      kind: 'illegal_dumping',
-      suspectedParty: '',
-      description: '',
-      immediateHazard: false,
-    })
-    setIncidentPhoto(null)
-    setIncidentErr('')
-  }
-
-  function openIncidentWorkflow() {
-    setIncidentErr('')
-    setIncidentOpen(true)
-    if (!userLocation) handleLocateMe()
-  }
-
-  function buildIncidentEvidenceText() {
-    const typeLabel = incidentForm.kind === 'ground_contamination' ? 'Ground contamination' : 'Illegal dumping'
-    const coords = userLocation
-      ? `${userLocation.lat.toFixed(5)}, ${userLocation.lng.toFixed(5)}`
-      : 'Location not captured yet'
-
-    return [
-      '[ENVIRONMENTAL INCIDENT]',
-      `Type: ${typeLabel}`,
-      `Time recorded: ${new Date().toLocaleString()}`,
-      `Location: ${coords}`,
-      `Immediate hazard: ${incidentForm.immediateHazard ? 'Yes' : 'No'}`,
-      `Suspected source: ${incidentForm.suspectedParty || 'Not provided'}`,
-      `Details: ${incidentForm.description || 'Not provided'}`,
-    ].join('\n')
-  }
-
-  async function copyIncidentSummary() {
-    try {
-      await navigator.clipboard.writeText(buildIncidentEvidenceText())
-      setIncidentErr('Evidence summary copied. Paste it into your local and federal reporting forms.')
-    } catch {
-      setIncidentErr('Could not copy automatically. You can still submit this incident here.')
-    }
-  }
-
-  async function submitIncident(e) {
-    e.preventDefault()
-    if (!userLocation) {
-      setIncidentErr('Location not available yet. Tap GPS first, then try again.')
-      return
-    }
-    if (!incidentForm.description.trim()) {
-      setIncidentErr('Please add incident details so agencies can investigate.')
-      return
-    }
-    if (nearbyIncidentDuplicate) {
-      setIncidentErr('This type of incident has already been reported nearby. Please avoid duplicate reports and add evidence to the existing marker instead.')
-      return
-    }
-    if (!token) {
-      setAuthMode('login')
-      setAuthOpen(true)
-      setIncidentErr('Login required to save incident evidence in RefuseRefuse.')
-      return
-    }
-
-    setIncidentSubmitting(true)
-    setIncidentErr('')
-    try {
-      const fd = new FormData()
-      fd.append('lat', userLocation.lat)
-      fd.append('lng', userLocation.lng)
-      fd.append('severity', incidentForm.kind === 'ground_contamination' ? 'urgent' : 'trashy')
-      fd.append('notes', buildIncidentEvidenceText())
-      fd.append('picked_up', false)
-      if (incidentPhoto) fd.append('file', incidentPhoto)
-
-      await axios.post(`${API}/reports`, fd, {
-        headers: { Authorization: `Bearer ${token}` },
-      })
-      await fetchReports()
-      setIncidentOpen(false)
-      resetIncidentForm()
-    } catch (err) {
-      setIncidentErr(err?.response?.data?.detail || 'Failed to submit incident evidence')
-    } finally {
-      setIncidentSubmitting(false)
-    }
-  }
-
   async function submitAuth(e) {
     e.preventDefault()
     setAuthErr('')
@@ -893,12 +848,12 @@ export default function MapPage() {
     .sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
     .slice(0, 5)
   const visibleReports = reports.filter(shouldShowMarker)
-  const nearbyIncidentDuplicate = userLocation
+  const nearbyIncidentDuplicate = pending && form.reportType === 'incident'
     ? visibleReports.find((r) => {
         if (!isIncidentReport(r)) return false
         if (r.picked_up) return false
-        if (getIncidentKindFromReport(r) !== incidentForm.kind) return false
-        return distanceMeters(userLocation, { lat: r.lat, lng: r.lng }) <= INCIDENT_DUPLICATE_RADIUS_METERS
+        if (getIncidentKindFromReport(r) !== form.incidentKind) return false
+        return distanceMeters(pending, { lat: r.lat, lng: r.lng }) <= INCIDENT_DUPLICATE_RADIUS_METERS
       })
     : null
 
@@ -936,10 +891,10 @@ export default function MapPage() {
           Find cleanup ≤ 1 mile
         </button>
         <button
-          onClick={openIncidentWorkflow}
-          style={{ background: '#4c1d1d', border: '1px solid #925050', color: '#fff', borderRadius: 8, padding: '4px 10px', cursor: 'pointer', fontSize: 13, fontWeight: 700 }}
+          onClick={openReportRefuse}
+          style={{ background: '#2f5d3a', border: '1px solid #5f9b73', color: '#fff', borderRadius: 8, padding: '4px 10px', cursor: 'pointer', fontSize: 13, fontWeight: 700 }}
         >
-          Report environmental incident
+          Report refuse
         </button>
         <button
           onClick={() => setAccountMenuOpen(v => !v)}
@@ -1050,7 +1005,7 @@ export default function MapPage() {
 
         {!pending && showTapHint && (
           <div style={{ position: 'absolute', top: 12, left: '50%', transform: 'translateX(-50%)', background: 'rgba(0,0,0,0.65)', color: '#fff', padding: '6px 16px', borderRadius: 20, fontSize: 13, pointerEvents: 'none', zIndex: 500, whiteSpace: 'nowrap' }}>
-            Tap the map to report trash
+            Tap the map to report refuse
           </div>
         )}
 
@@ -1469,188 +1424,114 @@ export default function MapPage() {
           </div>
         )}
 
-        {incidentOpen && (
-          <div style={{ position: 'absolute', inset: 0, background: 'rgba(0,0,0,0.45)', display: 'grid', placeItems: 'center', zIndex: 820 }}>
-            <div style={{ width: 'min(760px, 94vw)', maxHeight: '88vh', overflowY: 'auto', background: '#fff', borderRadius: 14, padding: 18, boxShadow: '0 14px 36px rgba(0,0,0,0.3)' }}>
-              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
-                <div>
-                  <h3 style={{ margin: 0, fontSize: 19 }}>Environmental Incident Workflow</h3>
-                  <div style={{ fontSize: 12, color: '#5b6787', marginTop: 2 }}>
-                    Document illegal dumping or contamination and escalate with evidence.
-                  </div>
-                </div>
-                <button onClick={() => { setIncidentOpen(false); resetIncidentForm() }} className="modal-close-btn" aria-label="Close incident workflow">×</button>
-              </div>
-
-              <form onSubmit={submitIncident}>
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: 14 }}>
-                  <div style={{ background: '#f8faff', border: '1px solid #dbe4f9', borderRadius: 10, padding: 12 }}>
-                    <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 8 }}>1. Capture evidence</div>
-
-                    <label style={{ display: 'block', fontSize: 12, fontWeight: 600, marginBottom: 4 }}>Incident type</label>
-                    <select
-                      value={incidentForm.kind}
-                      onChange={(e) => setIncidentForm((f) => ({ ...f, kind: e.target.value }))}
-                      style={{ width: '100%', borderRadius: 8, border: '1px solid #c8d3ef', padding: '8px 10px', marginBottom: 10 }}
-                    >
-                      <option value="illegal_dumping">Illegal dumping</option>
-                      <option value="ground_contamination">Ground contamination</option>
-                    </select>
-
-                    <label style={{ display: 'block', fontSize: 12, fontWeight: 600, marginBottom: 4 }}>Suspected source (optional)</label>
-                    <input
-                      value={incidentForm.suspectedParty}
-                      onChange={(e) => setIncidentForm((f) => ({ ...f, suspectedParty: e.target.value }))}
-                      placeholder="Company, vehicle, site owner, etc."
-                      style={{ width: '100%', borderRadius: 8, border: '1px solid #c8d3ef', padding: '8px 10px', marginBottom: 10 }}
-                    />
-
-                    <label style={{ display: 'block', fontSize: 12, fontWeight: 600, marginBottom: 4 }}>What did you observe?</label>
-                    <textarea
-                      value={incidentForm.description}
-                      onChange={(e) => setIncidentForm((f) => ({ ...f, description: e.target.value }))}
-                      rows={4}
-                      placeholder="Describe odors, liquids, barrels, smoke, runoff, dead vegetation, timestamps, witnesses..."
-                      style={{ width: '100%', boxSizing: 'border-box', borderRadius: 8, border: '1px solid #c8d3ef', padding: '8px 10px', marginBottom: 10 }}
-                    />
-
-                    <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, marginBottom: 10 }}>
-                      <input
-                        type="checkbox"
-                        checked={incidentForm.immediateHazard}
-                        onChange={(e) => setIncidentForm((f) => ({ ...f, immediateHazard: e.target.checked }))}
-                      />
-                      Immediate hazard to people, animals, or waterways
-                    </label>
-
-                    <button
-                      type="button"
-                      onClick={() => incidentFileRef.current?.click()}
-                      style={{ width: '100%', borderRadius: 8, border: '1px dashed #90a3d5', background: '#f2f6ff', padding: '8px 10px', fontSize: 12, cursor: 'pointer' }}
-                    >
-                      {incidentPhoto ? `Attached: ${incidentPhoto.name}` : 'Attach evidence photo'}
-                    </button>
-                    <input
-                      ref={incidentFileRef}
-                      type="file"
-                      accept="image/*"
-                      style={{ display: 'none' }}
-                      onChange={(e) => setIncidentPhoto(e.target.files?.[0] ?? null)}
-                    />
-
-                    {nearbyIncidentDuplicate && (
-                      <div style={{ marginTop: 10, padding: 8, borderRadius: 8, background: '#fff3f3', border: '1px solid #f1c9c9', fontSize: 12, color: '#7f1d1d' }}>
-                        Similar incident already reported nearby. Please avoid duplicate reports.
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setIncidentFocusTarget({ lat: nearbyIncidentDuplicate.lat, lng: nearbyIncidentDuplicate.lng })
-                            setIncidentOpen(false)
-                            setIncidentErr('')
-                          }}
-                          style={{ marginTop: 8, width: '100%', borderRadius: 8, border: '1px solid #d5a8a8', background: '#fff', color: '#7f1d1d', padding: '6px 8px', fontSize: 12, cursor: 'pointer', fontWeight: 700 }}
-                        >
-                          View existing report
-                        </button>
-                      </div>
-                    )}
-                  </div>
-
-                  <div style={{ background: '#fff8f8', border: '1px solid #f0d6d6', borderRadius: 10, padding: 12 }}>
-                    <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 8 }}>2. Escalate to agencies</div>
-                    <div style={{ fontSize: 12, color: '#4f5670', lineHeight: 1.6, marginBottom: 10 }}>
-                      Keep facts objective. Include time, location, photos, and observed impacts.
-                    </div>
-                    <ol style={{ margin: 0, paddingLeft: 18, display: 'grid', gap: 7, fontSize: 12, color: '#2f3550' }}>
-                      <li>
-                        State agency reporting guidance based on report location (coming soon).
-                      </li>
-                      <li>
-                        EPA environmental violations portal:{' '}
-                        <a href="https://echo.epa.gov/report-environmental-violations" target="_blank" rel="noreferrer">echo.epa.gov report violations</a>
-                      </li>
-                      <li>
-                        Hazardous spill emergency reporting:{' '}
-                        <a href="https://www.nrc.uscg.mil/" target="_blank" rel="noreferrer">National Response Center</a>{' '}
-                        (1-800-424-8802)
-                      </li>
-                      <li>
-                        If there is immediate danger, call 911 first, then file agency reports.
-                      </li>
-                    </ol>
-
-                    <div style={{ marginTop: 12, padding: 10, background: '#fff', border: '1px solid #e2e6f3', borderRadius: 8 }}>
-                      <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 4 }}>Evidence summary preview</div>
-                      <pre style={{ margin: 0, whiteSpace: 'pre-wrap', fontSize: 11, color: '#36405f', fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace' }}>
-                        {buildIncidentEvidenceText()}
-                      </pre>
-                    </div>
-
-                    <button
-                      type="button"
-                      onClick={copyIncidentSummary}
-                      style={{ marginTop: 10, width: '100%', borderRadius: 8, border: '1px solid #c8d3ef', background: '#fff', padding: '8px 10px', fontSize: 12, cursor: 'pointer', fontWeight: 600 }}
-                    >
-                      Copy summary for agency forms
-                    </button>
-                  </div>
-                </div>
-
-                {incidentErr && (
-                  <div style={{ marginTop: 10, fontSize: 12, color: '#b00020' }}>{incidentErr}</div>
-                )}
-
-                <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 14 }}>
-                  <button
-                    type="button"
-                    onClick={() => { setIncidentOpen(false); resetIncidentForm() }}
-                    style={{ border: '1px solid #cad3ea', background: '#fff', color: '#34466d', borderRadius: 8, padding: '8px 12px', cursor: 'pointer' }}
-                  >
-                    Cancel
-                  </button>
-                  <button
-                    type="submit"
-                    disabled={incidentSubmitting || Boolean(nearbyIncidentDuplicate)}
-                    style={{ border: 'none', background: (incidentSubmitting || nearbyIncidentDuplicate) ? '#8a97b3' : '#b71c1c', color: '#fff', borderRadius: 8, padding: '8px 14px', cursor: (incidentSubmitting || nearbyIncidentDuplicate) ? 'default' : 'pointer', fontWeight: 700 }}
-                  >
-                    {incidentSubmitting ? 'Saving evidence...' : (nearbyIncidentDuplicate ? 'Nearby incident already reported' : 'Save incident evidence')}
-                  </button>
-                </div>
-              </form>
-            </div>
-          </div>
-        )}
-
         {pending && (
           <div style={{ position: 'absolute', bottom: 0, left: 0, right: 0, background: '#fff', borderRadius: '16px 16px 0 0', boxShadow: '0 -4px 24px rgba(0,0,0,0.22)', padding: '20px 20px 32px', zIndex: 500 }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
-              <h3 style={{ margin: 0, fontSize: 16 }}>New Trash Report</h3>
+              <h3 style={{ margin: 0, fontSize: 16 }}>Report refuse</h3>
               <button onClick={cancelForm} className="modal-close-btn" aria-label="Close report form">×</button>
+            </div>
+
+            <div style={{ fontSize: 12, color: '#607091', marginBottom: 10 }}>
+              {`${pending.lat.toFixed(5)}, ${pending.lng.toFixed(5)}`}
             </div>
 
             <form onSubmit={submitReport}>
               <div style={{ marginBottom: 14 }}>
-                <label style={{ fontSize: 13, fontWeight: 600, display: 'block', marginBottom: 8 }}>Severity</label>
+                <label style={{ fontSize: 13, fontWeight: 600, display: 'block', marginBottom: 8 }}>Report type</label>
                 <div style={{ display: 'flex', gap: 6 }}>
-                  {SEVERITIES.map(s => (
-                    <button key={s} type="button" onClick={() => setForm(f => ({ ...f, severity: s }))}
-                      style={{ flex: 1, padding: '7px 0', borderRadius: 8, border: '2px solid', borderColor: form.severity === s ? SEV_COLOR[s] : '#ddd', background: form.severity === s ? SEV_COLOR[s] : '#f9f9f9', color: form.severity === s ? '#fff' : '#555', fontWeight: 600, fontSize: 11, cursor: 'pointer', textTransform: 'capitalize' }}>
-                      {s}
-                    </button>
-                  ))}
+                  <button
+                    type="button"
+                    onClick={() => setForm(f => ({ ...f, reportType: 'trash', picked_up: f.picked_up }))}
+                    style={{ flex: 1, padding: '7px 0', borderRadius: 8, border: '2px solid', borderColor: form.reportType === 'trash' ? '#2f5d3a' : '#ddd', background: form.reportType === 'trash' ? '#2f5d3a' : '#f9f9f9', color: form.reportType === 'trash' ? '#fff' : '#555', fontWeight: 700, fontSize: 12, cursor: 'pointer' }}
+                  >
+                    Trash cleanup
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setForm(f => ({ ...f, reportType: 'incident', picked_up: false }))}
+                    style={{ flex: 1, padding: '7px 0', borderRadius: 8, border: '2px solid', borderColor: form.reportType === 'incident' ? '#7f1d1d' : '#ddd', background: form.reportType === 'incident' ? '#7f1d1d' : '#f9f9f9', color: form.reportType === 'incident' ? '#fff' : '#555', fontWeight: 700, fontSize: 12, cursor: 'pointer' }}
+                  >
+                    Environmental incident
+                  </button>
+                </div>
+                <div style={{ marginTop: 6, fontSize: 12, color: '#607091' }}>
+                  {form.reportType === 'incident'
+                    ? 'Use this for dumping, contamination, spills, or urgent environmental harm.'
+                    : 'Use this for standard trash and debris reports.'}
                 </div>
               </div>
 
+              {form.reportType === 'trash' ? (
+                <div style={{ marginBottom: 14 }}>
+                  <label style={{ fontSize: 13, fontWeight: 600, display: 'block', marginBottom: 8 }}>Severity</label>
+                  <div style={{ display: 'flex', gap: 6 }}>
+                    {SEVERITIES.map(s => (
+                      <button key={s} type="button" onClick={() => setForm(f => ({ ...f, severity: s }))}
+                        style={{ flex: 1, padding: '7px 0', borderRadius: 8, border: '2px solid', borderColor: form.severity === s ? SEV_COLOR[s] : '#ddd', background: form.severity === s ? SEV_COLOR[s] : '#f9f9f9', color: form.severity === s ? '#fff' : '#555', fontWeight: 600, fontSize: 11, cursor: 'pointer', textTransform: 'capitalize' }}>
+                        {s}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              ) : (
+                <>
+                  <div style={{ marginBottom: 12 }}>
+                    <label style={{ fontSize: 13, fontWeight: 600, display: 'block', marginBottom: 6 }}>Incident type</label>
+                    <select
+                      value={form.incidentKind}
+                      onChange={(e) => setForm(f => ({ ...f, incidentKind: e.target.value }))}
+                      style={{ width: '100%', borderRadius: 8, border: '1px solid #c8d3ef', padding: '8px 10px' }}
+                    >
+                      <option value="illegal_dumping">Illegal dumping</option>
+                      <option value="ground_contamination">Ground contamination</option>
+                    </select>
+                  </div>
+
+                  <div style={{ marginBottom: 12 }}>
+                    <label style={{ fontSize: 13, fontWeight: 600, display: 'block', marginBottom: 6 }}>Suspected source (optional)</label>
+                    <input
+                      value={form.suspectedSource}
+                      onChange={(e) => setForm(f => ({ ...f, suspectedSource: e.target.value }))}
+                      placeholder="Company, vehicle, site owner, etc."
+                      style={{ width: '100%', boxSizing: 'border-box', borderRadius: 8, border: '1px solid #ddd', padding: '8px 10px', fontSize: 13 }}
+                    />
+                  </div>
+
+                  <div style={{ marginBottom: 14, display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <input type="checkbox" id="immediate_hazard" checked={form.immediateHazard} onChange={e => setForm(f => ({ ...f, immediateHazard: e.target.checked }))} style={{ width: 16, height: 16, cursor: 'pointer' }} />
+                    <label htmlFor="immediate_hazard" style={{ fontSize: 13, cursor: 'pointer' }}>Immediate hazard to people, animals, or waterways</label>
+                  </div>
+                </>
+              )}
+
               <div style={{ marginBottom: 12 }}>
                 <label style={{ fontSize: 13, fontWeight: 600, display: 'block', marginBottom: 6 }}>Notes</label>
-                <textarea value={form.notes} onChange={e => setForm(f => ({ ...f, notes: e.target.value }))} placeholder="Optional description..." rows={2}
+                <textarea value={form.notes} onChange={e => setForm(f => ({ ...f, notes: e.target.value }))} placeholder={form.reportType === 'incident' ? 'Describe the incident, hazards, and context...' : 'Optional description...'} rows={form.reportType === 'incident' ? 4 : 2}
                   style={{ width: '100%', boxSizing: 'border-box', borderRadius: 8, border: '1px solid #ddd', padding: '8px 10px', fontSize: 13, resize: 'none', outline: 'none' }} />
               </div>
 
-              <div style={{ marginBottom: 14, display: 'flex', alignItems: 'center', gap: 8 }}>
-                <input type="checkbox" id="picked_up" checked={form.picked_up} onChange={e => setForm(f => ({ ...f, picked_up: e.target.checked }))} style={{ width: 16, height: 16, cursor: 'pointer' }} />
-                <label htmlFor="picked_up" style={{ fontSize: 13, cursor: 'pointer' }}>I already cleaned it up</label>
-              </div>
+              {form.reportType === 'trash' ? (
+                <div style={{ marginBottom: 14, display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <input type="checkbox" id="picked_up" checked={form.picked_up} onChange={e => setForm(f => ({ ...f, picked_up: e.target.checked }))} style={{ width: 16, height: 16, cursor: 'pointer' }} />
+                  <label htmlFor="picked_up" style={{ fontSize: 13, cursor: 'pointer' }}>I already cleaned it up</label>
+                </div>
+              ) : null}
+
+              {form.reportType === 'incident' && nearbyIncidentDuplicate && (
+                <div style={{ marginBottom: 14, padding: 8, borderRadius: 8, background: '#fff3f3', border: '1px solid #f1c9c9', fontSize: 12, color: '#7f1d1d' }}>
+                  Similar incident already reported nearby.
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIncidentFocusTarget({ lat: nearbyIncidentDuplicate.lat, lng: nearbyIncidentDuplicate.lng })
+                      cancelForm()
+                    }}
+                    style={{ marginTop: 8, width: '100%', borderRadius: 8, border: '1px solid #d5a8a8', background: '#fff', color: '#7f1d1d', padding: '6px 8px', fontSize: 12, cursor: 'pointer', fontWeight: 700 }}
+                  >
+                    View existing report
+                  </button>
+                </div>
+              )}
 
               <div style={{ marginBottom: 16 }}>
                 <button type="button" onClick={() => fileRef.current.click()}
@@ -1661,8 +1542,8 @@ export default function MapPage() {
               </div>
 
               <button type="submit" disabled={submitting}
-                style={{ width: '100%', padding: '13px 0', borderRadius: 10, border: 'none', background: submitting ? '#aaa' : '#1976d2', color: '#fff', fontWeight: 700, fontSize: 15, cursor: submitting ? 'default' : 'pointer' }}>
-                {submitting ? 'Submitting…' : 'Submit Report'}
+                style={{ width: '100%', padding: '13px 0', borderRadius: 10, border: 'none', background: submitting ? '#aaa' : (form.reportType === 'incident' ? '#9d1b1b' : '#1976d2'), color: '#fff', fontWeight: 700, fontSize: 15, cursor: submitting ? 'default' : 'pointer' }}>
+                {submitting ? 'Submitting…' : (form.reportType === 'incident' ? 'Save incident report' : 'Save report')}
               </button>
             </form>
           </div>

@@ -72,6 +72,27 @@ function formatCount(value, singular, plural = `${singular}s`) {
   return `${value} ${value === 1 ? singular : plural}`
 }
 
+const DEFAULT_REPORT_DRAFT = {
+  reportType: 'trash',
+  severity: 'light',
+  notes: '',
+  picked_up: false,
+  incidentKind: 'illegal_dumping',
+  immediateHazard: false,
+  suspectedSource: '',
+}
+
+function buildIncidentNotesFromDraft(draft) {
+  const typeLabel = draft.incidentKind === 'ground_contamination' ? 'Ground contamination' : 'Illegal dumping'
+  return [
+    '[ENVIRONMENTAL INCIDENT]',
+    `Type: ${typeLabel}`,
+    `Immediate hazard: ${draft.immediateHazard ? 'Yes' : 'No'}`,
+    `Suspected source: ${draft.suspectedSource || 'Not provided'}`,
+    `Details: ${draft.notes || 'Not provided'}`,
+  ].join('\n')
+}
+
 function AppContent() {
   const insets = useSafeAreaInsets()
   const { height: windowHeight } = useWindowDimensions()
@@ -97,7 +118,6 @@ function AppContent() {
   const [currentUser, setCurrentUser] = useState(null)
   const [profileOpen, setProfileOpen] = useState(false)
   const [reportOpen, setReportOpen] = useState(false)
-  const [incidentOpen, setIncidentOpen] = useState(false)
   const [selectedReport, setSelectedReport] = useState(null)
   const [mapTheme, setMapTheme] = useState('voyager')
   const [uiPreset, setUiPreset] = useState('modern')
@@ -116,7 +136,7 @@ function AppContent() {
   const [cleanupMessage, setCleanupMessage] = useState('')
   const [cleanupCelebrateVisible, setCleanupCelebrateVisible] = useState(false)
   const [pendingCoordinate, setPendingCoordinate] = useState(null)
-  const [reportDraft, setReportDraft] = useState({ severity: 'light', notes: '', picked_up: false })
+  const [reportDraft, setReportDraft] = useState(DEFAULT_REPORT_DRAFT)
   const [apiBaseUrl] = useState(resolveApiBaseUrl())
   const [googleRequest, googleResponse, promptGoogleSignIn] = Google.useIdTokenAuthRequest({
     expoClientId: GOOGLE_EXPO_CLIENT_ID || undefined,
@@ -648,6 +668,7 @@ function AppContent() {
 
   function openReportComposer(coordinate) {
     setPendingCoordinate(coordinate)
+    setReportDraft(DEFAULT_REPORT_DRAFT)
     setReportOpen(true)
   }
 
@@ -675,9 +696,19 @@ function AppContent() {
       const fd = new FormData()
       fd.append('lat', pendingCoordinate.latitude)
       fd.append('lng', pendingCoordinate.longitude)
-      fd.append('severity', reportDraft.severity)
-      fd.append('notes', reportDraft.notes || '')
-      fd.append('picked_up', reportDraft.picked_up)
+      if (reportDraft.reportType === 'incident') {
+        if (!reportDraft.notes?.trim()) {
+          alert('Please add incident details.')
+          return
+        }
+        fd.append('severity', reportDraft.incidentKind === 'ground_contamination' ? 'urgent' : 'trashy')
+        fd.append('notes', buildIncidentNotesFromDraft(reportDraft))
+        fd.append('picked_up', false)
+      } else {
+        fd.append('severity', reportDraft.severity)
+        fd.append('notes', reportDraft.notes || '')
+        fd.append('picked_up', reportDraft.picked_up)
+      }
 
       const res = await fetch(`${apiBaseUrl}/reports`, {
         method: 'POST',
@@ -691,62 +722,17 @@ function AppContent() {
       }
 
       await refreshReports()
-      if (reportDraft.picked_up) {
+      if (reportDraft.reportType === 'trash' && reportDraft.picked_up) {
         triggerSuccessHaptic()
         showCleanupCelebration()
       } else {
         triggerImpactHaptic()
       }
       setReportOpen(false)
-      setReportDraft({ severity: 'light', notes: '', picked_up: false })
+      setReportDraft(DEFAULT_REPORT_DRAFT)
       setPendingCoordinate(null)
     } catch (err) {
       alert(err?.message || 'Failed to submit report')
-    }
-  }
-
-  async function submitIncident() {
-    if (!token) {
-      setAuthOpen(true)
-      return
-    }
-
-    if (!pendingCoordinate || !pendingCoordinate.latitude || !pendingCoordinate.longitude) {
-      alert('Invalid coordinates. Please try again.')
-      return
-    }
-
-    if (!reportDraft.notes?.trim()) {
-      alert('Please add incident details.')
-      return
-    }
-
-    try {
-      const fd = new FormData()
-      fd.append('lat', pendingCoordinate.latitude)
-      fd.append('lng', pendingCoordinate.longitude)
-      fd.append('severity', 'urgent')
-      fd.append('notes', `[ENVIRONMENTAL INCIDENT]\n${reportDraft.notes}`)
-      fd.append('picked_up', false)
-
-      const res = await fetch(`${apiBaseUrl}/reports`, {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${token}` },
-        body: fd,
-      })
-
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({ detail: 'Incident submission failed' }))
-        throw new Error(body?.detail || 'Incident submission failed')
-      }
-
-      await refreshReports()
-      triggerImpactHaptic()
-      setIncidentOpen(false)
-      setReportDraft({ severity: 'light', notes: '', picked_up: false })
-      setPendingCoordinate(null)
-    } catch (err) {
-      alert(err?.message || 'Failed to submit incident')
     }
   }
 
@@ -829,7 +815,7 @@ function AppContent() {
 
           {!reportOpen && showTapHint ? (
             <View style={styles.tapHint}>
-              <Text style={styles.tapHintText}>Tap the map to report trash</Text>
+              <Text style={styles.tapHintText}>Tap the map to report refuse</Text>
             </View>
           ) : null}
 
@@ -876,20 +862,16 @@ function AppContent() {
           {selectedReport ? <ReportCard report={selectedReport} onClose={() => setSelectedReport(null)} /> : null}
 
           <View style={[styles.mapActionRail, { bottom: tabBarHeight + (isCompactScreen ? 10 : 12) }]}>
-            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={[styles.mapActionRailContent, isCompactScreen ? styles.mapActionRailContentCompact : null]}>
-              <MapActionButton compact={isCompactScreen} icon={liveTracking ? 'pause-circle-outline' : 'locate-outline'} label={liveTracking ? 'Stop tracking' : 'Locate + track'} onPress={handleTrackingControl} accent={liveTracking ? '#2e7d32' : '#2b365a'} border={liveTracking ? '#5dc56b' : '#5f6c93'} />
-              <MapActionButton compact={isCompactScreen} icon="walk-outline" label="Find cleanup" onPress={handleFindCleanup} />
-              <MapActionButton compact={isCompactScreen} icon="warning-outline" label="Report incident" onPress={() => setIncidentOpen(true)} accent="#4c1d1d" border="#925050" />
-            </ScrollView>
+            <View style={[styles.mapActionRailRow, isCompactScreen ? styles.mapActionRailRowCompact : null]}>
+              <MapActionButton compact={isCompactScreen} iconOnly icon={liveTracking ? 'pause-circle-outline' : 'locate-outline'} label={liveTracking ? 'Stop tracking' : 'Locate + track'} onPress={handleTrackingControl} accent={liveTracking ? '#2e7d32' : '#2b365a'} border={liveTracking ? '#5dc56b' : '#5f6c93'} />
+              <MapActionButton compact={isCompactScreen} stretch icon="walk-outline" label="Cleanup" onPress={handleFindCleanup} />
+              <MapActionButton compact={isCompactScreen} stretch icon="add-circle-outline" label="Report refuse" onPress={() => openReportComposer(userLocation || { latitude: INITIAL_REGION.latitude, longitude: INITIAL_REGION.longitude })} accent="#2f5d3a" border="#5f9b73" />
+            </View>
           </View>
 
           <View style={[styles.fabStack, { bottom: tabBarHeight + (isCompactScreen ? 62 : 70) }]}> 
             <TouchableOpacity style={styles.refreshFab} onPress={refreshReports}>
               <Ionicons name="refresh" size={18} color="#fff" />
-            </TouchableOpacity>
-            <TouchableOpacity style={styles.reportFab} onPress={() => openReportComposer(userLocation || { latitude: INITIAL_REGION.latitude, longitude: INITIAL_REGION.longitude })}>
-              <Ionicons name="add" size={20} color="#fff" />
-              <Text style={styles.reportFabText}>Report</Text>
             </TouchableOpacity>
           </View>
 
@@ -933,7 +915,7 @@ function AppContent() {
                   <Text style={styles.secondaryButtonText}>Refresh feed</Text>
                 </TouchableOpacity>
                 <TouchableOpacity style={styles.secondaryButtonFull} onPress={() => { setActiveTab('map'); openReportComposer(userLocation || { latitude: INITIAL_REGION.latitude, longitude: INITIAL_REGION.longitude }) }}>
-                  <Text style={styles.secondaryButtonText}>Create report</Text>
+                  <Text style={styles.secondaryButtonText}>Report refuse</Text>
                 </TouchableOpacity>
               </View>
             </View>
@@ -1018,7 +1000,7 @@ function AppContent() {
 
         <View style={[styles.bottomTabBar, { paddingBottom: tabBarBottomInset, bottom: 0 }, isCompactScreen ? styles.bottomTabBarCompact : null]}> 
           <TabButton icon="map-outline" label="Map" active={activeTab === 'map'} onPress={() => { triggerSelectionHaptic(); setActiveTab('map') }} />
-          <TabButton icon="list-outline" label="Activity" active={activeTab === 'activity'} onPress={() => { triggerSelectionHaptic(); setActiveTab('activity') }} />
+          <TabButton icon="trash-outline" label="Activity" active={activeTab === 'activity'} onPress={() => { triggerSelectionHaptic(); setActiveTab('activity') }} />
           <TabButton icon="person-circle-outline" label="Profile" active={activeTab === 'profile'} onPress={() => { triggerSelectionHaptic(); setActiveTab('profile') }} />
         </View>
 
@@ -1099,8 +1081,6 @@ function AppContent() {
           onDraftChange={setReportDraft}
           onSubmit={submitReport}
         />
-
-        <IncidentModal visible={incidentOpen} compact={isCompactScreen} onClose={() => setIncidentOpen(false)} userLocation={userLocation} coordinate={pendingCoordinate} onSubmit={submitIncident} draft={reportDraft} onDraftChange={setReportDraft} />
       </SafeAreaView>
     </LinearGradient>
   )
@@ -1115,11 +1095,21 @@ function HeaderButton({ accent = '#2b365a', border = '#5f6c93', icon, label, onP
   )
 }
 
-function MapActionButton({ accent = '#2b365a', border = '#5f6c93', compact = false, icon, label, onPress }) {
+function MapActionButton({ accent = '#2b365a', border = '#5f6c93', compact = false, iconOnly = false, stretch = false, icon, label, onPress }) {
   return (
-    <TouchableOpacity style={[styles.mapActionButton, compact ? styles.mapActionButtonCompact : null, { backgroundColor: accent, borderColor: border }]} onPress={onPress}>
+    <TouchableOpacity
+      style={[
+        styles.mapActionButton,
+        compact ? styles.mapActionButtonCompact : null,
+        iconOnly ? styles.mapActionButtonIconOnly : null,
+        stretch ? styles.mapActionButtonStretch : null,
+        { backgroundColor: accent, borderColor: border },
+      ]}
+      onPress={onPress}
+      accessibilityLabel={label}
+    >
       <Ionicons name={icon} size={16} color="#fff" />
-      <Text style={[styles.mapActionButtonText, compact ? styles.mapActionButtonTextCompact : null]}>{label}</Text>
+      {!iconOnly ? <Text style={[styles.mapActionButtonText, compact ? styles.mapActionButtonTextCompact : null]}>{label}</Text> : null}
     </TouchableOpacity>
   )
 }
@@ -1419,12 +1409,14 @@ function StatPanel({ accent, label, tint, value }) {
 }
 
 function ReportComposer({ visible, compact, draft, coordinate, onClose, onDraftChange, onSubmit }) {
+  const isIncident = draft.reportType === 'incident'
+
   return (
     <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
       <View style={styles.sheetBackdrop}>
         <View style={[styles.reportSheet, compact ? styles.reportSheetCompact : null]}>
           <View style={styles.modalHeader}>
-            <Text style={styles.modalTitle}>New Trash Report</Text>
+            <Text style={styles.modalTitle}>Report refuse</Text>
             <TouchableOpacity style={styles.modalCloseButton} onPress={onClose}>
               <Ionicons name="close" size={18} color="#44537a" />
             </TouchableOpacity>
@@ -1434,86 +1426,110 @@ function ReportComposer({ visible, compact, draft, coordinate, onClose, onDraftC
             {coordinate ? `${coordinate.latitude.toFixed(5)}, ${coordinate.longitude.toFixed(5)}` : 'Tap the map to set a location'}
           </Text>
 
-          <Text style={styles.inputLabel}>Severity</Text>
+          <Text style={styles.inputLabel}>Report type</Text>
           <View style={styles.severityRow}>
-            {SEVERITIES.map((severity) => (
-              <TouchableOpacity
-                key={severity}
-                style={[
-                  styles.sheetSeverityButton,
-                  draft.severity === severity ? { backgroundColor: SEV_COLOR[severity], borderColor: SEV_COLOR[severity] } : null,
-                ]}
-                onPress={() => onDraftChange({ ...draft, severity })}
-              >
-                <Text style={[styles.sheetSeverityText, draft.severity === severity ? styles.sheetSeverityTextActive : null]}>{severity}</Text>
-              </TouchableOpacity>
-            ))}
+            <TouchableOpacity
+              style={[
+                styles.sheetSeverityButton,
+                !isIncident ? { backgroundColor: '#2f5d3a', borderColor: '#2f5d3a' } : null,
+              ]}
+              onPress={() => onDraftChange({ ...draft, reportType: 'trash', picked_up: draft.picked_up })}
+            >
+              <Text style={[styles.sheetSeverityText, !isIncident ? styles.sheetSeverityTextActive : null]}>Trash cleanup</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[
+                styles.sheetSeverityButton,
+                isIncident ? { backgroundColor: '#7f1d1d', borderColor: '#7f1d1d' } : null,
+              ]}
+              onPress={() => onDraftChange({ ...draft, reportType: 'incident', picked_up: false })}
+            >
+              <Text style={[styles.sheetSeverityText, isIncident ? styles.sheetSeverityTextActive : null]}>Environmental incident</Text>
+            </TouchableOpacity>
           </View>
+          <Text style={styles.helperText}>{isIncident ? 'Use this when there is dumping, contamination, or urgent environmental harm.' : 'Use this for standard trash or debris reports.'}</Text>
+
+          {!isIncident ? (
+            <>
+              <Text style={styles.inputLabel}>Severity</Text>
+              <View style={styles.severityRow}>
+                {SEVERITIES.map((severity) => (
+                  <TouchableOpacity
+                    key={severity}
+                    style={[
+                      styles.sheetSeverityButton,
+                      draft.severity === severity ? { backgroundColor: SEV_COLOR[severity], borderColor: SEV_COLOR[severity] } : null,
+                    ]}
+                    onPress={() => onDraftChange({ ...draft, severity })}
+                  >
+                    <Text style={[styles.sheetSeverityText, draft.severity === severity ? styles.sheetSeverityTextActive : null]}>{severity}</Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+            </>
+          ) : (
+            <>
+              <Text style={styles.inputLabel}>Incident type</Text>
+              <View style={styles.severityRow}>
+                <TouchableOpacity
+                  style={[
+                    styles.sheetSeverityButton,
+                    draft.incidentKind === 'illegal_dumping' ? { backgroundColor: '#b71c1c', borderColor: '#b71c1c' } : null,
+                  ]}
+                  onPress={() => onDraftChange({ ...draft, incidentKind: 'illegal_dumping' })}
+                >
+                  <Text style={[styles.sheetSeverityText, draft.incidentKind === 'illegal_dumping' ? styles.sheetSeverityTextActive : null]}>Illegal dumping</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[
+                    styles.sheetSeverityButton,
+                    draft.incidentKind === 'ground_contamination' ? { backgroundColor: '#8b0000', borderColor: '#8b0000' } : null,
+                  ]}
+                  onPress={() => onDraftChange({ ...draft, incidentKind: 'ground_contamination' })}
+                >
+                  <Text style={[styles.sheetSeverityText, draft.incidentKind === 'ground_contamination' ? styles.sheetSeverityTextActive : null]}>Ground contamination</Text>
+                </TouchableOpacity>
+              </View>
+
+              <Text style={styles.inputLabel}>Suspected source (optional)</Text>
+              <TextInput
+                placeholder="Company, vehicle, site owner..."
+                placeholderTextColor="#8190b2"
+                style={styles.inputField}
+                value={draft.suspectedSource}
+                onChangeText={(suspectedSource) => onDraftChange({ ...draft, suspectedSource })}
+              />
+
+              <View style={styles.switchRow}>
+                <Text style={styles.switchLabel}>Immediate hazard</Text>
+                <Switch value={draft.immediateHazard} onValueChange={(immediateHazard) => onDraftChange({ ...draft, immediateHazard })} />
+              </View>
+            </>
+          )}
 
           <Text style={styles.inputLabel}>Notes</Text>
           <TextInput
             multiline
             numberOfLines={3}
-            placeholder="Optional description..."
+            placeholder={isIncident ? 'Describe what you observed and any danger...' : 'Optional description...'}
             placeholderTextColor="#8190b2"
             style={[styles.textArea, compact ? styles.textAreaCompact : null]}
             value={draft.notes}
             onChangeText={(notes) => onDraftChange({ ...draft, notes })}
           />
 
-          <View style={styles.switchRow}>
-            <Text style={styles.switchLabel}>I already cleaned it up</Text>
-            <Switch value={draft.picked_up} onValueChange={(picked_up) => onDraftChange({ ...draft, picked_up })} />
-          </View>
+          {!isIncident ? (
+            <View style={styles.switchRow}>
+              <Text style={styles.switchLabel}>I already cleaned it up</Text>
+              <Switch value={draft.picked_up} onValueChange={(picked_up) => onDraftChange({ ...draft, picked_up })} />
+            </View>
+          ) : null}
 
           <TouchableOpacity style={styles.primaryButton} onPress={onSubmit}>
-            <Text style={styles.primaryButtonText}>Submit Report</Text>
+            <Text style={styles.primaryButtonText}>{isIncident ? 'Save incident report' : 'Save report'}</Text>
           </TouchableOpacity>
         </View>
       </View>
-    </Modal>
-  )
-}
-
-function IncidentModal({ visible, compact, onClose, userLocation, coordinate, draft, onDraftChange, onSubmit }) {
-  const locationLabel = userLocation
-    ? `${userLocation.latitude.toFixed(5)}, ${userLocation.longitude.toFixed(5)}`
-    : 'Location not captured yet'
-
-  return (
-    <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
-      <Pressable style={styles.modalOverlay} onPress={onClose}>
-        <Pressable style={[styles.modalCardLarge, compact ? styles.modalCardLargeCompact : null]}>
-          <View style={styles.modalHeader}>
-            <View>
-              <Text style={styles.modalTitle}>Environmental Incident Workflow</Text>
-              <Text style={styles.paragraphText}>Document illegal dumping or contamination and escalate with evidence.</Text>
-            </View>
-            <TouchableOpacity style={styles.modalCloseButton} onPress={onClose}>
-              <Ionicons name="close" size={18} color="#44537a" />
-            </TouchableOpacity>
-          </View>
-
-          <Text style={styles.sectionTitle}>Incident Details</Text>
-          <TextInput
-            multiline
-            numberOfLines={4}
-            placeholder="Describe the incident, hazards, and immediate threat..."
-            placeholderTextColor="#8190b2"
-            style={[styles.textArea, compact ? styles.textAreaCompact : null]}
-            value={draft?.notes || ''}
-            onChangeText={(notes) => onDraftChange && onDraftChange({ ...draft, notes })}
-          />
-
-          <Text style={styles.sectionTitle}>Escalation path</Text>
-          <Text style={styles.listRow}>1. State agency reporting guidance based on report location (coming soon)</Text>
-          <Text style={styles.listRow}>2. EPA environmental violations portal</Text>
-          <Text style={styles.listRow}>3. National Response Center for emergency spills</Text>
-          <TouchableOpacity style={styles.primaryButton} onPress={onSubmit}>
-            <Text style={styles.primaryButtonText}>Submit Incident Report</Text>
-          </TouchableOpacity>
-        </Pressable>
-      </Pressable>
     </Modal>
   )
 }
@@ -1685,6 +1701,14 @@ const styles = StyleSheet.create({
     right: 10,
     zIndex: 20,
   },
+  mapActionRailRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  mapActionRailRowCompact: {
+    gap: 6,
+  },
   mapActionRailContent: {
     gap: 8,
     paddingRight: 6,
@@ -1708,6 +1732,16 @@ const styles = StyleSheet.create({
     paddingHorizontal: 11,
     paddingVertical: 8,
     gap: 6,
+  },
+  mapActionButtonIconOnly: {
+    width: 44,
+    justifyContent: 'center',
+    paddingHorizontal: 0,
+    gap: 0,
+  },
+  mapActionButtonStretch: {
+    flex: 1,
+    justifyContent: 'center',
   },
   mapActionButtonText: {
     color: '#fff',
@@ -2318,6 +2352,12 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontFamily: 'SpaceGrotesk_700Bold',
   },
+  helperText: {
+    color: '#65718f',
+    fontSize: 12,
+    fontFamily: 'SpaceGrotesk_400Regular',
+    marginTop: -4,
+  },
   severityRow: {
     flexDirection: 'row',
     flexWrap: 'wrap',
@@ -2354,6 +2394,15 @@ const styles = StyleSheet.create({
   textAreaCompact: {
     minHeight: 72,
     paddingVertical: 9,
+  },
+  inputField: {
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#ddd',
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    color: '#1f2743',
+    fontFamily: 'SpaceGrotesk_400Regular',
   },
   primaryButton: {
     borderRadius: 10,
