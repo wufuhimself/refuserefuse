@@ -19,7 +19,7 @@
     "mobile:android": "npm --prefix mobile run android",
     "test": "npm run test:backend",
     "test:backend": "cd backend && ./.venv/bin/python -m pytest",
-    "test:backend:install": "cd backend && python3 -m venv --clear .venv && ./.venv/bin/pip install -r requirements.txt pytest httpx",
+    "test:backend:install": "cd backend && python3 -m venv --clear .venv && ./.venv/bin/pip install -r requirements-dev.txt",
     "frontend:dev": "npm --prefix frontend run dev",
     "frontend:build": "npm --prefix frontend run build",
     "frontend:preview": "npm --prefix frontend run preview"

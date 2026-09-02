@@ -1,11 +1,12 @@
 # Backend tests
 
 ```bash
-make test-install   # once — builds backend/.venv with requirements + pytest + httpx
+make test-install   # once — builds backend/.venv from requirements-dev.txt
 make test           # or: npm test, or: cd backend && ./.venv/bin/python -m pytest
 ```
 
-87 tests, ~1s. No network, no Docker, no running server: each test gets its own
+87 tests, ~1s. Runs in CI on every push and PR to `main`. No network, no Docker, no
+running server: each test gets its own
 in-memory SQLite database and drives the app through FastAPI's `TestClient`.
 
 ## Layout
@@ -23,6 +24,21 @@ Two custom markers (24 and 18 tests), so the boundaries can be run on their own:
 ./.venv/bin/python -m pytest -m security   # authorization / data-scoping boundaries
 ./.venv/bin/python -m pytest -m privacy    # location-privacy guarantees
 ```
+
+## CI
+
+`.github/workflows/backend-tests.yml` runs this suite on every push and PR to `main`,
+against a matrix of **Python 3.12 and 3.14**. 3.12 is what `backend/Dockerfile` runs, so
+it is the version that matters for production parity; 3.14 is what the dev machine has.
+Both are known green — the matrix exists to keep it that way.
+
+No path filter, deliberately: a path-filtered workflow that skips never reports a status,
+so if this ever becomes a required check, PRs touching only the frontend would hang
+waiting for a check that never arrives. The job is under a minute; filtering buys little.
+
+Test dependencies live in `backend/requirements-dev.txt`, which pulls in
+`requirements.txt` via `-r`. The Makefile, the npm script, and CI all install from that
+one file so the three cannot drift apart.
 
 ## How the app is made testable
 

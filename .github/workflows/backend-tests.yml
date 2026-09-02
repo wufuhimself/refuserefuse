@@ -1,0 +1,41 @@
+name: Backend tests
+
+# Runs on every push and PR to main. No path filter on purpose: if this ever becomes a
+# required status check, a path-filtered workflow that skips simply never reports, and
+# PRs hang waiting for a check that will not arrive. The job takes well under a minute,
+# so filtering would not buy much anyway.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    strategy:
+      fail-fast: false
+      matrix:
+        # 3.12 is what backend/Dockerfile runs, so it is the version that matters for
+        # production parity. 3.14 is what the dev machine has. Testing both is what
+        # stops "works on my machine" from going unnoticed.
+        python-version: ['3.12', '3.14']
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: backend/requirements*.txt
+
+      - name: Install dependencies
+        run: pip install -r backend/requirements-dev.txt
+
+      - name: Run tests
+        working-directory: backend
+        run: python -m pytest

@@ -108,5 +108,5 @@ test:
 test-install:
 	@echo "Setting up backend test venv..."
 	@cd $(BACKEND_DIR) && python3 -m venv --clear .venv && \
-		$(TEST_VENV)/pip install -q -r requirements.txt pytest httpx
+		$(TEST_VENV)/pip install -q -r requirements-dev.txt
 	@echo "✓ Done. Run 'make test'."

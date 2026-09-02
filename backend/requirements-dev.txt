@@ -1,0 +1,6 @@
+# Test dependencies. Installed on top of the runtime requirements so the Makefile,
+# the npm script, and CI all resolve the same versions from one place.
+-r requirements.txt
+
+pytest>=8.0
+httpx>=0.27
