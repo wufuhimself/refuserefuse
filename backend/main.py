@@ -270,7 +270,10 @@ def _resolve_user_label(session: Session, user_id: Optional[str]) -> Optional[st
     found = session.get(User, uid)
     if not found:
         return None
-    return found.display_name or found.email
+    # Deliberately no email fallback: GET /reports is public and unauthenticated, so
+    # returning the email here published the address of any user who registered without
+    # a display name. Both clients already render a placeholder when this is null.
+    return found.display_name
 
 
 def _serialize_report(session: Session, report: Report) -> ReportPublic:
@@ -338,8 +341,16 @@ def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(bearer)
     except JWTError as exc:
         raise HTTPException(status_code=401, detail="Invalid token") from exc
 
+    # int() lives outside the JWTError handler above, so it needs its own guard: a
+    # validly-signed token carrying a non-numeric subject would otherwise raise
+    # ValueError and surface as a 500 from every authenticated endpoint.
+    try:
+        user_key = int(user_id)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=401, detail="Invalid token") from exc
+
     with Session(engine) as session:
-        user = session.get(User, int(user_id))
+        user = session.get(User, user_key)
         if not user:
             raise HTTPException(status_code=401, detail="User not found")
         return user

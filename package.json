@@ -17,6 +17,9 @@
     "mobile:start:tunnel": "npm --prefix mobile run start:tunnel",
     "mobile:ios": "npm --prefix mobile run ios",
     "mobile:android": "npm --prefix mobile run android",
+    "test": "npm run test:backend",
+    "test:backend": "cd backend && ./.venv/bin/python -m pytest",
+    "test:backend:install": "cd backend && python3 -m venv --clear .venv && ./.venv/bin/pip install -r requirements.txt pytest httpx",
     "frontend:dev": "npm --prefix frontend run dev",
     "frontend:build": "npm --prefix frontend run build",
     "frontend:preview": "npm --prefix frontend run preview"

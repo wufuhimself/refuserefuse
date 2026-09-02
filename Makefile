@@ -1,6 +1,9 @@
 BACKEND_DIR  = backend
 FRONTEND_DIR = frontend
 VENV         = $(CURDIR)/$(BACKEND_DIR)/venv/bin
+# Tests use their own env. The committed-era `backend/venv` was created under the
+# repo's old `trashgame` path and no longer has a working interpreter.
+TEST_VENV    = $(CURDIR)/$(BACKEND_DIR)/.venv/bin
 
 BACKEND_PID  = $(CURDIR)/.backend.pid
 FRONTEND_PID = $(CURDIR)/.frontend.pid
@@ -8,7 +11,7 @@ FRONTEND_PID = $(CURDIR)/.frontend.pid
 BACKEND_LOG  = $(CURDIR)/.backend.log
 FRONTEND_LOG = $(CURDIR)/.frontend.log
 
-.PHONY: start stop restart backend frontend logs logs-backend logs-frontend status install
+.PHONY: start stop restart backend frontend logs logs-backend logs-frontend status install test test-install
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 # Kill a PID and all its children, then remove the PID file
@@ -94,3 +97,16 @@ install:
 	@echo "Installing frontend packages..."
 	@cd $(FRONTEND_DIR) && npm install
 	@echo "✓ Done"
+
+# ── Tests (backend) ───────────────────────────────────────────────────────────
+test:
+	@if [ ! -x $(TEST_VENV)/python ]; then \
+		echo "No test venv found. Run 'make test-install' first."; exit 1; \
+	fi
+	@cd $(BACKEND_DIR) && $(TEST_VENV)/python -m pytest
+
+test-install:
+	@echo "Setting up backend test venv..."
+	@cd $(BACKEND_DIR) && python3 -m venv --clear .venv && \
+		$(TEST_VENV)/pip install -q -r requirements.txt pytest httpx
+	@echo "✓ Done. Run 'make test'."
