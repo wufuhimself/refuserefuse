@@ -13,6 +13,7 @@ import jwt as pyjwt
 from jwt import PyJWKClient
 from passlib.context import CryptContext
 from pydantic import BaseModel, EmailStr
+from sqlalchemy import func
 from sqlmodel import select
 
 from database import init_db, engine
@@ -26,6 +27,25 @@ JWT_ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_HOURS = 24 * 7
 GOOGLE_CLIENT_IDS = [cid.strip() for cid in os.getenv("GOOGLE_CLIENT_IDS", "").split(",") if cid.strip()]
 APPLE_AUDIENCES = [aud.strip() for aud in os.getenv("APPLE_AUDIENCES", "").split(",") if aud.strip()]
+
+# Report input limits. Both clients only ever send these four severities and colour the
+# map pins by them, so an unrecognised value renders as an undefined colour.
+ALLOWED_SEVERITIES = ("light", "moderate", "trashy", "urgent")
+MAX_NOTES_LENGTH = 2000
+MAX_DURATION_MINUTES = 24 * 60
+MAX_UPLOAD_BYTES = 10 * 1024 * 1024
+ALLOWED_IMAGE_TYPES = (
+    "image/jpeg",
+    "image/png",
+    "image/webp",
+    "image/heic",
+    "image/heif",
+)
+
+# Rate limit on report creation, counted per user over a rolling window. Set
+# REPORT_RATE_LIMIT_MAX=0 to disable.
+REPORT_RATE_LIMIT_MAX = int(os.getenv("REPORT_RATE_LIMIT_MAX", "10"))
+REPORT_RATE_LIMIT_WINDOW_MINUTES = int(os.getenv("REPORT_RATE_LIMIT_WINDOW_MINUTES", "10"))
 pwd_context = CryptContext(schemes=["pbkdf2_sha256"], deprecated="auto")
 bearer = HTTPBearer()
 google_jwks_client = PyJWKClient("https://www.googleapis.com/oauth2/v3/certs")
@@ -317,6 +337,92 @@ def _serialize_location_point(point: LocationPoint) -> LocationPointPublic:
         is_coarse=point.is_coarse,
         recorded_at=point.recorded_at,
     )
+
+
+def _validate_report_fields(
+    lat: float,
+    lng: float,
+    severity: str,
+    notes: Optional[str],
+    duration_minutes: Optional[int],
+) -> str:
+    """Validate report input and return the normalised severity.
+
+    Raises 400 with a plain-string detail rather than relying on FastAPI's automatic
+    422, because the mobile client renders `detail` directly as an error message and a
+    422's structured list would surface to the user as noise.
+
+    NaN and infinity fail the range comparisons naturally: any comparison against NaN is
+    False, so `-90 <= nan <= 90` is False and the check rejects it.
+    """
+    if not -90 <= lat <= 90:
+        raise HTTPException(status_code=400, detail="Latitude must be between -90 and 90")
+    if not -180 <= lng <= 180:
+        raise HTTPException(status_code=400, detail="Longitude must be between -180 and 180")
+
+    normalised = (severity or "").strip().lower()
+    if normalised not in ALLOWED_SEVERITIES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Severity must be one of: {', '.join(ALLOWED_SEVERITIES)}",
+        )
+
+    if notes is not None and len(notes) > MAX_NOTES_LENGTH:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Notes must be {MAX_NOTES_LENGTH} characters or fewer",
+        )
+
+    if duration_minutes is not None and not 0 <= duration_minutes <= MAX_DURATION_MINUTES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Duration must be between 0 and {MAX_DURATION_MINUTES} minutes",
+        )
+
+    return normalised
+
+
+def _validate_upload(file: UploadFile) -> None:
+    """Uploads are served as static files, so only accept real image types."""
+    content_type = (file.content_type or "").split(";")[0].strip().lower()
+    if content_type not in ALLOWED_IMAGE_TYPES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Photo must be one of: {', '.join(ALLOWED_IMAGE_TYPES)}",
+        )
+
+    if file.size is not None and file.size > MAX_UPLOAD_BYTES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Photo must be {MAX_UPLOAD_BYTES // (1024 * 1024)}MB or smaller",
+        )
+
+
+def _enforce_report_rate_limit(session: Session, user: User) -> None:
+    """Cap how many reports one account can file in a rolling window.
+
+    Counted in the database rather than in process memory so the limit still holds with
+    more than one uvicorn worker. Soft-deleted reports are counted on purpose —
+    otherwise deleting your own reports would reset the quota and defeat the limit.
+    """
+    if REPORT_RATE_LIMIT_MAX <= 0:
+        return
+
+    window_start = datetime.now(timezone.utc) - timedelta(minutes=REPORT_RATE_LIMIT_WINDOW_MINUTES)
+    recent = session.exec(
+        select(func.count())
+        .select_from(Report)
+        .where(Report.user_id == str(user.id), Report.created_at >= window_start)
+    ).one()
+
+    if recent >= REPORT_RATE_LIMIT_MAX:
+        raise HTTPException(
+            status_code=429,
+            detail=(
+                f"Report limit reached ({REPORT_RATE_LIMIT_MAX} per "
+                f"{REPORT_RATE_LIMIT_WINDOW_MINUTES} minutes). Try again shortly."
+            ),
+        )
 
 
 def _round_coord(value: float) -> float:
@@ -629,6 +735,7 @@ async def update_report_photo(
         if report.user_id != str(user.id):
             raise HTTPException(status_code=403, detail="Only the original reporter can add a photo")
 
+        _validate_upload(file)
         report.photo_path = await save_upload(file)
         session.add(report)
         session.commit()
@@ -665,6 +772,15 @@ async def create_report(
     file: UploadFile = File(None),
     user: User = Depends(get_current_user),
 ):
+    severity = _validate_report_fields(lat, lng, severity, notes, duration_minutes)
+    if file:
+        _validate_upload(file)
+
+    # Check the quota before writing the upload, so a rejected request cannot still
+    # leave an orphaned file behind in storage.
+    with Session(engine) as session:
+        _enforce_report_rate_limit(session, user)
+
     photo_path = await save_upload(file) if file else None
 
     report = Report(

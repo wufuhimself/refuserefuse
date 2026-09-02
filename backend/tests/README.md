@@ -5,7 +5,7 @@ make test-install   # once — builds backend/.venv from requirements-dev.txt
 make test           # or: npm test, or: cd backend && ./.venv/bin/python -m pytest
 ```
 
-87 tests, ~1s. Runs in CI on every push and PR to `main`. No network, no Docker, no
+137 tests, ~1.3s. Runs in CI on every push and PR to `main`. No network, no Docker, no
 running server: each test gets its own
 in-memory SQLite database and drives the app through FastAPI's `TestClient`.
 
@@ -16,9 +16,10 @@ in-memory SQLite database and drives the app through FastAPI's `TestClient`.
 | `test_auth.py` | 31 | Registration, login, password hashing, JWT validation, the authenticated-endpoint boundary |
 | `test_oauth_linking.py` | 16 | The one-provider-per-email rule and every branch of `_find_or_create_oauth_user` |
 | `test_reports.py` | 17 | Public reads, authenticated writes, per-row ownership, soft delete, photo upload |
+| `test_report_validation.py` | 50 | Coordinate/severity/notes/duration validation, upload type and size limits, rate limiting |
 | `test_location_privacy.py` | 23 | Consent provenance, server-side minimization, cross-user scoping, read clamping, deletion |
 
-Two custom markers (24 and 18 tests), so the boundaries can be run on their own:
+Two custom markers (32 and 18 tests), so the boundaries can be run on their own:
 
 ```bash
 ./.venv/bin/python -m pytest -m security   # authorization / data-scoping boundaries
@@ -27,10 +28,19 @@ Two custom markers (24 and 18 tests), so the boundaries can be run on their own:
 
 ## CI
 
-`.github/workflows/backend-tests.yml` runs this suite on every push and PR to `main`,
-against a matrix of **Python 3.12 and 3.14**. 3.12 is what `backend/Dockerfile` runs, so
-it is the version that matters for production parity; 3.14 is what the dev machine has.
-Both are known green — the matrix exists to keep it that way.
+`.github/workflows/ci.yml` has two jobs, both on every push and PR to `main`:
+
+- **`backend-tests`** runs this suite against **Python 3.12 and 3.14**. 3.12 is what
+  `backend/Dockerfile` runs, so it is the version that matters for production parity;
+  3.14 is what the dev machine has. Both are known green — the matrix keeps it that way.
+- **`frontend-build`** runs `npm ci && npm run build` on **Node 20 and 22**. The frontend
+  has no tests, so a clean production build is the check: it catches syntax errors, bad
+  imports, and missing dependencies. Node 20 matches `frontend/Dockerfile`; Node 22 is
+  there because Node 20 reached end of life in April 2026 and the Dockerfile is overdue a
+  bump — that leg is the evidence for whether bumping breaks anything.
+
+All actions are pinned to `@v7`, which runs on the Node 24 runner. Earlier majors
+(`checkout@v4`, `setup-python@v5`) target Node 20 and emit a deprecation annotation.
 
 No path filter, deliberately: a path-filtered workflow that skips never reports a status,
 so if this ever becomes a required check, PRs touching only the frontend would hang

@@ -1,0 +1,79 @@
+name: CI
+
+# No path filter on purpose: if either job ever becomes a required status check, a
+# path-filtered workflow that skips never reports, and PRs would hang waiting for a
+# check that never arrives. Both jobs finish in well under a minute.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Supersede in-flight runs on the same ref rather than paying for both.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend-tests:
+    name: Backend tests (py${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    strategy:
+      fail-fast: false
+      matrix:
+        # 3.12 is what backend/Dockerfile runs, so it is the version that matters for
+        # production parity. 3.14 is what the dev machine has. Testing both is what
+        # stops "works on my machine" from going unnoticed.
+        python-version: ['3.12', '3.14']
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: backend/requirements*.txt
+
+      - name: Install dependencies
+        run: pip install -r backend/requirements-dev.txt
+
+      - name: Run tests
+        working-directory: backend
+        run: python -m pytest
+
+  frontend-build:
+    name: Frontend build (node ${{ matrix.node-version }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    strategy:
+      fail-fast: false
+      matrix:
+        # 20 matches frontend/Dockerfile. 22 is here to prove the upgrade is safe —
+        # Node 20 reached end of life in April 2026, so the Dockerfile is overdue a
+        # bump and this job is the evidence for whether that bump breaks the build.
+        node-version: ['20', '22']
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Node ${{ matrix.node-version }}
+        uses: actions/setup-node@v7
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      # The frontend has no tests, so a clean production build is the check: it catches
+      # syntax errors, bad imports, and missing dependencies before they reach a browser.
+      - name: Install dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Build
+        working-directory: frontend
+        run: npm run build
