@@ -17,3 +17,6 @@ backend/uploads/
 # dev server PID files
 .backend.pid
 .frontend.pid
+
+# macOS finder metadata
+.DS_Store
