@@ -53,10 +53,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # 20 matches frontend/Dockerfile. 22 is here to prove the upgrade is safe —
-        # Node 20 reached end of life in April 2026, so the Dockerfile is overdue a
-        # bump and this job is the evidence for whether that bump breaks the build.
-        node-version: ['20', '22']
+        # 22 matches frontend/Dockerfile. 24 is the next LTS, kept green ahead of time
+        # so the next bump is already de-risked before it is needed — which is exactly
+        # how the 20 -> 22 move happened: the spare leg was the evidence.
+        node-version: ['22', '24']
 
     steps:
       - uses: actions/checkout@v7
